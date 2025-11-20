@@ -26,21 +26,21 @@ pip install -r requirements.txt
 
 ```bash
 # Example 1: Train an AoE model on NLI data
-python -m aoe.train --task nli --method aoe --output_dir ckpt/bert_nli_aoe
+python -m aoe.train --task nli --method aoe --output_dir output/ckpt/bert_nli_aoe
 
 # Example 2: Evaluate a checkpoint on STS-B
-python -m aoe.eval_sts --ckpt ckpt/bert_nli_aoe --datasets stsb
+python -m aoe.eval_sts --ckpt output/ckpt/bert_nli_aoe --datasets stsb
 ```
 
 ```bash
 # Train a baseline (contrastive-only) encoder on SNLI + MultiNLI
-python -m aoe.train --task nli --method baseline --output_dir ckpt/bert_nli_baseline
+python -m aoe.train --task nli --method baseline --output_dir output/ckpt/bert_nli_baseline
 
 # Train an AoE encoder with angle + contrastive objectives
-python -m aoe.train --task nli --method aoe --output_dir ckpt/bert_nli_aoe
+python -m aoe.train --task nli --method aoe --output_dir output/ckpt/bert_nli_aoe
 
 # Evaluate an AoE checkpoint on STS-B and GIS
-python -m aoe.eval_sts --ckpt ckpt/bert_nli_aoe --datasets stsb,gis
+python -m aoe.eval_sts --ckpt output/ckpt/bert_nli_aoe --datasets stsb,gis
 ```
 
 ```python
@@ -63,6 +63,13 @@ embeddings_re, embeddings_im = complex_encoder.encode(sentences)
 ## Implementation Details
 
 The training objective follows a simplified AoE-inspired design: we measure angle differences between complex sentence embeddings so that high-similarity pairs keep smaller angles, and combine that signal with a supervised contrastive objective. The final loss is a weighted sum of the angle-ranking term and the contrastive loss, preserving the key intuition of AoE without reproducing every detail from the original paper.
+
+## Cache & Output Layout
+
+- Hugging Face datasets default to `data/` (override with `--data_cache`).
+- Hugging Face model weights default to `models/` (override with `--model_cache`).
+- Checkpoints default to `output/ckpt/...` via `--output_dir`.
+- Analysis artifacts (plots) default to `output/plot/` (override with `--plot_dir`).
 
 ## Datasets
 

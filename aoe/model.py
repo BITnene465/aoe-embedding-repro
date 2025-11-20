@@ -15,6 +15,7 @@ class SentenceEncoder(nn.Module):
 		model_name: str = "bert-base-uncased",
 		complex_mode: bool = False,
 		pooling: str = "cls",
+		cache_dir: Optional[str] = "models",
 	) -> None:
 		"""Initialize tokenizer, encoder, and pooling strategy."""
 
@@ -22,10 +23,11 @@ class SentenceEncoder(nn.Module):
 		if pooling not in {"cls", "mean"}:
 			raise ValueError("pooling must be either 'cls' or 'mean'")
 
-		self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-		self.model = AutoModel.from_pretrained(model_name)
+		self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+		self.model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
 		self.complex_mode = complex_mode
 		self.pooling = pooling
+		self.cache_dir = cache_dir
 
 		for param in self.model.parameters():
 			param.requires_grad = True

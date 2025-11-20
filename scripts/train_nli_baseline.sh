@@ -8,4 +8,4 @@ python -m aoe.train \
   --batch_size 128 \
   --epochs 1 \
   --lr 2e-5 \
-  --output_dir ckpt/bert_nli_baseline
+  --output_dir output/ckpt/bert_nli_baseline

@@ -8,4 +8,4 @@ python -m aoe.train \
   --batch_size 64 \
   --epochs 1 \
   --lr 2e-5 \
-  --output_dir ckpt/bert_stsb_aoe
+  --output_dir output/ckpt/bert_stsb_aoe

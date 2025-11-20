@@ -1,6 +1,6 @@
 """Data loading and preprocessing utilities for AoE experiments."""
 
-from typing import Dict
+from typing import Dict, Optional
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
@@ -39,28 +39,30 @@ def _filter_valid_labels(example: Dict[str, int]) -> bool:
     return False
 
 
-def load_nli_dataset(split: str = "train") -> Dataset:
-	"""Load SNLI and MultiNLI, clean invalid labels, and merge them into one dataset."""
+def load_nli_dataset(split: str = "train", cache_dir: Optional[str] = "data") -> Dataset:
+    """Load SNLI and MultiNLI, clean invalid labels, and merge them into one dataset."""
 
-	snli = load_dataset("snli", split=split).filter(_filter_valid_labels)
+    snli = load_dataset("snli", split=split, cache_dir=cache_dir).filter(_filter_valid_labels)
 
-	mnli_split = _resolve_mnli_split(split)
-	mnli = load_dataset("multi_nli", split=mnli_split).filter(_filter_valid_labels)
+    mnli_split = _resolve_mnli_split(split)
+    mnli = load_dataset("multi_nli", split=mnli_split, cache_dir=cache_dir).filter(
+        _filter_valid_labels
+    )
 
-	required_cols = {"premise", "hypothesis", "label"}
-	if not required_cols.issubset(snli.column_names):
-		raise ValueError("SNLI split is missing required fields")
-	if not required_cols.issubset(mnli.column_names):
-		raise ValueError("MultiNLI split is missing required fields")
+    required_cols = {"premise", "hypothesis", "label"}
+    if not required_cols.issubset(snli.column_names):
+        raise ValueError("SNLI split is missing required fields")
+    if not required_cols.issubset(mnli.column_names):
+        raise ValueError("MultiNLI split is missing required fields")
 
-	combined = concatenate_datasets([snli, mnli])
-	return combined
+    combined = concatenate_datasets([snli, mnli])
+    return combined
 
 
-def load_stsb_splits() -> Dict[str, Dataset]:
+def load_stsb_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
     """Return STS-B splits with fields (sentence1, sentence2, score)."""
 
-    ds_dict = load_dataset("glue", "stsb")
+    ds_dict = load_dataset("glue", "stsb", cache_dir=cache_dir)
     splits: Dict[str, Dataset] = {}
     for split_name in ("train", "validation", "test"):
         if split_name not in ds_dict:
@@ -72,11 +74,11 @@ def load_stsb_splits() -> Dict[str, Dataset]:
     return splits
 
 
-def load_sickr_split() -> Dataset:
+def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
     """Load the SICK-R dataset (validation split) with normalized field names."""
 
     try:
-        ds = load_dataset("sick", split="validation")
+        ds = load_dataset("sick", split="validation", cache_dir=cache_dir)
     except Exception as exc:  # pragma: no cover - dataset availability guard
         raise NotImplementedError(
             "SICK-R is not available via datasets in this environment."
@@ -93,10 +95,10 @@ def load_sickr_split() -> Dataset:
     return ds
 
 
-def load_gis_splits() -> Dict[str, Dataset]:
+def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
     """Load the GitHub Issue Similarity dataset and expose sentence fields plus scores."""
 
-    ds_dict = load_dataset("WhereIsAI/github-issue-similarity")
+    ds_dict = load_dataset("WhereIsAI/github-issue-similarity", cache_dir=cache_dir)
 
     def normalize(example: Dict[str, object]) -> Dict[str, object]:
         text1 = _pick_field(
