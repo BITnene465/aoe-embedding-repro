@@ -8,6 +8,7 @@ import os
 
 import torch
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -92,6 +93,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory for TensorBoard event files; defaults to <output>/<run>/tensorboard; use 'none' to disable",
     )
+    parser.add_argument(
+        "--grad_accum_steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps to emulate larger batch sizes",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=0,
+        help="Number of optimizer steps for linear LR warmup",
+    )
     return parser
 
 
@@ -121,6 +134,14 @@ def main() -> None:
     )
 
     optimizer = AdamW(encoder.parameters(), lr=config.lr)
+    scheduler = None
+    if config.warmup_steps > 0:
+        def lr_lambda(current_step: int) -> float:
+            if current_step >= config.warmup_steps:
+                return 1.0
+            return float(current_step + 1) / float(config.warmup_steps)
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
 
     eval_loader: DataLoader | None = None
     eval_split = (config.eval_split or "").lower()
@@ -177,6 +198,8 @@ def main() -> None:
             total_epochs=config.epochs,
             show_progress=not config.no_progress_bar,
             on_batch_end=batch_logger,
+            grad_accum_steps=config.grad_accum_steps,
+            scheduler_step=scheduler.step if scheduler is not None else None,
         )
 
         eval_angle = eval_contrast = eval_total = None

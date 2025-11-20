@@ -178,12 +178,16 @@ def train_epoch(
     total_epochs: int,
     show_progress: bool,
     on_batch_end: Optional[Callable[[dict], None]] = None,
+    grad_accum_steps: int = 1,
+    scheduler_step: Optional[Callable[[], None]] = None,
 ) -> Tuple[float, float, float, int]:
     encoder.train()
     angle_total = 0.0
     contrast_total = 0.0
     loss_total = 0.0
     steps = 0
+    grad_accum_steps = max(1, grad_accum_steps)
+    optimizer.zero_grad(set_to_none=True)
 
     iterator = dataloader
     if show_progress:
@@ -192,7 +196,6 @@ def train_epoch(
 
     for texts1, texts2, labels in iterator:
         steps += 1
-        optimizer.zero_grad()
         labels = labels.to(device)
         loss, angle_val, contrast_val = _forward_step(
             encoder,
@@ -207,8 +210,13 @@ def train_epoch(
             w_angle,
             max_length,
         )
-        loss.backward()
-        optimizer.step()
+        scaled_loss = loss / grad_accum_steps
+        scaled_loss.backward()
+        if steps % grad_accum_steps == 0:
+            optimizer.step()
+            if scheduler_step is not None:
+                scheduler_step()
+            optimizer.zero_grad(set_to_none=True)
         angle_total += angle_val
         contrast_total += contrast_val
         loss_total += loss.item()
@@ -230,6 +238,13 @@ def train_epoch(
                 angle=f"{angle_val:.4f}",
                 contrast=f"{contrast_val:.4f}",
             )
+
+    remainder = steps % grad_accum_steps
+    if remainder != 0:
+        optimizer.step()
+        if scheduler_step is not None:
+            scheduler_step()
+        optimizer.zero_grad(set_to_none=True)
 
     if show_progress and hasattr(iterator, "close"):
         iterator.close()
@@ -353,6 +368,8 @@ class TrainConfig:
     metrics_path: Optional[str]  # 自定义指标文件路径，例如 "output/logs/nli.jsonl" 或 "none"
     tensorboard_dir: Optional[str]  # TensorBoard 目录，例如 "output/tensorboard" 或 "none"
     no_progress_bar: bool  # 是否禁用 tqdm 进度条，例如 True 表示关闭
+    grad_accum_steps: int  # 梯度累积步数，例如 8 表示 8 个 batch 执行一次 optimizer.step()
+    warmup_steps: int  # 学习率线性 warmup 步数，例如 1000；0 表示关闭
 
     @classmethod
     def from_args(cls, args: object) -> "TrainConfig":
@@ -378,6 +395,8 @@ class TrainConfig:
             metrics_path=getattr(args, "metrics_path", None),
             tensorboard_dir=getattr(args, "tensorboard_dir", None),
             no_progress_bar=getattr(args, "no_progress_bar", False),
+            grad_accum_steps=getattr(args, "grad_accum_steps", 1),
+            warmup_steps=getattr(args, "warmup_steps", 0),
         )
 
     def to_dict(self) -> Dict[str, object]:
