@@ -1,0 +1,74 @@
+# 常规 Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 打包 / 发行
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+
+# 虚拟环境 & 环境变量
+.env
+.env.* 
+.venv/
+venv/
+env/
+venv*/
+env*/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.sublime-*
+*.code-workspace
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 数据、模型与中间产物（通常不纳入版本库）
+data/*
+datasets/*
+checkpoints/
+outputs/
+artifacts/
+results/
+weights/
+*.ckpt
+*.pt
+*.pth
+*.h5
+*.bin
+
+# 训练/实验运行日志与缓存
+logs/
+*.log
+runs/
+tensorboard/
+tb_logs/
+wandb/
+.mlflow/
+.mypy_cache/
+.pytest_cache/
+
+# Hugging Face / 其他缓存（可按需调整）
+.huggingface/
+transformers_cache/
+datasets_cache/
+cache/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 密钥 / 凭据
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# others
+code_prompts
