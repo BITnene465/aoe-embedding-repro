@@ -32,11 +32,9 @@ env*/
 # 数据、模型与中间产物（通常不纳入版本库）
 data/*
 datasets/*
-checkpoints/
-outputs/
-artifacts/
-results/
-weights/
+models/*
+checkpoints/*
+outputs/ckpt/*
 *.ckpt
 *.pt
 *.pth

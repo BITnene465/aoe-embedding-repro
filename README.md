@@ -11,6 +11,7 @@ Reproduces the AoE (Angle-optimized Embeddings) method from the ACL 2024 paper u
 - scipy
 - tqdm
 - matplotlib (optional)
+- tensorboard (optional, for experiment tracking)
 
 ## Installation
 
@@ -70,6 +71,7 @@ The training objective follows a simplified AoE-inspired design: we measure angl
 - Hugging Face model weights default to `models/` (override with `--model_cache`).
 - Checkpoints default to `output/ckpt/...` via `--output_dir`.
 - Analysis artifacts (plots) default to `output/plot/` (override with `--plot_dir`).
+- TensorBoard logs default to `<output_dir>/tensorboard` (override or disable with `--tensorboard_dir`). Run `tensorboard --logdir output/ckpt --port 6006` to inspect all sub-runs.
 
 ## Datasets
 

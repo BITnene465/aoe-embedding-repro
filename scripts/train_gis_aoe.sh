@@ -8,4 +8,5 @@ python -m aoe.train \
   --batch_size 64 \
   --epochs 1 \
   --lr 2e-5 \
-  --output_dir output/ckpt/bert_gis_aoe
+  --output_dir output \
+  --run_name bert_gis_aoe
