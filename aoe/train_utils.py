@@ -249,14 +249,20 @@ def evaluate_epoch(
     w_cl: float,
     w_angle: float,
     max_length: int,
-) -> Tuple[float, float, float]:
+    show_progress: bool = False,
+    on_batch_end: Optional[Callable[[dict], None]] = None,
+) -> Tuple[float, float, float, int]:
     encoder.eval()
     angle_total = 0.0
     contrast_total = 0.0
     loss_total = 0.0
     steps = 0
 
-    for texts1, texts2, labels in dataloader:
+    iterator = dataloader
+    if show_progress:
+        iterator = tqdm(dataloader, desc="Eval", leave=False)
+
+    for texts1, texts2, labels in iterator:
         steps += 1
         labels = labels.to(device)
         loss, angle_val, contrast_val = _forward_step(
@@ -276,8 +282,28 @@ def evaluate_epoch(
         contrast_total += contrast_val
         loss_total += loss.item()
 
+        if on_batch_end is not None:
+            on_batch_end(
+                {
+                    "batch": steps,
+                    "eval_angle": angle_val,
+                    "eval_contrast": contrast_val,
+                    "eval_total": loss.item(),
+                }
+            )
+
+        if show_progress and hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(
+                loss=f"{loss.item():.4f}",
+                angle=f"{angle_val:.4f}",
+                contrast=f"{contrast_val:.4f}",
+            )
+
+    if show_progress and hasattr(iterator, "close"):
+        iterator.close()
+
     denom = max(steps, 1)
-    return angle_total / denom, contrast_total / denom, loss_total / denom
+    return angle_total / denom, contrast_total / denom, loss_total / denom, steps
 
 
 def resolve_metrics_path(default_path: str, override: Optional[str]) -> Optional[str]:

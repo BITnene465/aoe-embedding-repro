@@ -10,6 +10,7 @@ from typing import List
 import numpy as np
 import torch
 from scipy.stats import spearmanr
+from tqdm.auto import tqdm
 
 from aoe.data import load_gis_splits, load_sickr_split, load_stsb_splits
 from aoe.model import SentenceEncoder
@@ -48,7 +49,8 @@ def _encode_texts(
     """Encode a list of texts into real-valued sentence embeddings."""
 
     chunks = []
-    for start in range(0, len(texts), batch_size):
+    iterator = range(0, len(texts), batch_size)
+    for start in tqdm(iterator, desc="Encoding", leave=False):
         batch = texts[start : start + batch_size]
         encoded = encoder.encode(batch, device=device, max_length=max_length)
         if isinstance(encoded, tuple):
@@ -149,7 +151,7 @@ def main() -> None:
                 requested.append(candidate)
 
     results = {}
-    for dataset_name in requested:
+    for dataset_name in tqdm(requested, desc="Datasets"):
         try:
             score = eval_dataset(
                 encoder,

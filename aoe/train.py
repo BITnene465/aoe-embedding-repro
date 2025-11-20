@@ -181,7 +181,7 @@ def main() -> None:
 
         eval_angle = eval_contrast = eval_total = None
         if eval_loader is not None:
-            eval_angle, eval_contrast, eval_total = evaluate_epoch(
+            eval_angle, eval_contrast, eval_total, _ = evaluate_epoch(
                 encoder,
                 eval_loader,
                 device,
@@ -191,6 +191,7 @@ def main() -> None:
                 w_cl=config.w_cl,
                 w_angle=config.w_angle,
                 max_length=config.max_length,
+                show_progress=not config.no_progress_bar,
             )
 
         message = (
