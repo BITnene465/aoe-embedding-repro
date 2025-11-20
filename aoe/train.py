@@ -133,10 +133,23 @@ def main() -> None:
         )
 
     metrics_path = resolve_metrics_path(run_dirs["metrics_default"], config.metrics_path)
+    batch_logger = None
+    global_step = 0
     if metrics_path is not None:
         os.makedirs(os.path.dirname(metrics_path) or ".", exist_ok=True)
         with open(metrics_path, "w", encoding="utf-8") as handle:
             handle.write("")
+
+        def batch_logger(payload: dict) -> None:
+            nonlocal global_step
+            global_step += 1
+            record = {
+                "type": "train_batch",
+                "global_step": global_step,
+                "run_dir": run_dirs["run"],
+            }
+            record.update(payload)
+            append_metrics(metrics_path, record)
 
     writer: SummaryWriter | None = None
     tb_dir = resolve_tensorboard_dir(run_dirs["tensorboard_default"], config.tensorboard_dir)
@@ -149,7 +162,7 @@ def main() -> None:
     angle_avg = contrast_avg = total_avg = 0.0
 
     for epoch in range(1, config.epochs + 1):
-        angle_avg, contrast_avg, total_avg = train_epoch(
+        angle_avg, contrast_avg, total_avg, _ = train_epoch(
             encoder,
             train_loader,
             optimizer,
@@ -163,6 +176,7 @@ def main() -> None:
             epoch_idx=epoch,
             total_epochs=config.epochs,
             show_progress=not config.no_progress_bar,
+            on_batch_end=batch_logger,
         )
 
         eval_angle = eval_contrast = eval_total = None
@@ -192,6 +206,7 @@ def main() -> None:
 
         if metrics_path is not None:
             record = {
+                "type": "train_epoch",
                 "epoch": epoch,
                 "run_dir": run_dirs["run"],
                 "train_angle": angle_avg,

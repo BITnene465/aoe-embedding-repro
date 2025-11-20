@@ -6,7 +6,7 @@ import json
 import os
 import random
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -177,7 +177,8 @@ def train_epoch(
     epoch_idx: int,
     total_epochs: int,
     show_progress: bool,
-) -> Tuple[float, float, float]:
+    on_batch_end: Optional[Callable[[dict], None]] = None,
+) -> Tuple[float, float, float, int]:
     encoder.train()
     angle_total = 0.0
     contrast_total = 0.0
@@ -212,11 +213,29 @@ def train_epoch(
         contrast_total += contrast_val
         loss_total += loss.item()
 
+        if on_batch_end is not None:
+            on_batch_end(
+                {
+                    "epoch": epoch_idx,
+                    "batch": steps,
+                    "train_angle": angle_val,
+                    "train_contrast": contrast_val,
+                    "train_total": loss.item(),
+                }
+            )
+
+        if show_progress and hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(
+                loss=f"{loss.item():.4f}",
+                angle=f"{angle_val:.4f}",
+                contrast=f"{contrast_val:.4f}",
+            )
+
     if show_progress and hasattr(iterator, "close"):
         iterator.close()
 
     denom = max(steps, 1)
-    return angle_total / denom, contrast_total / denom, loss_total / denom
+    return angle_total / denom, contrast_total / denom, loss_total / denom, steps
 
 
 @torch.no_grad()
@@ -287,27 +306,27 @@ def resolve_tensorboard_dir(default_dir: str, override: Optional[str]) -> Option
 
 @dataclass
 class TrainConfig:
-    task: str
-    method: str
-    backbone: str
-    batch_size: int
-    epochs: int
-    lr: float
-    max_length: int
-    temperature_cl: float
-    temperature_angle: float
-    w_cl: float
-    w_angle: float
-    output_dir: str
-    run_name: str
-    data_cache: Optional[str]
-    model_cache: Optional[str]
-    seed: int
-    eval_split: Optional[str]
-    eval_batch_size: Optional[int]
-    metrics_path: Optional[str]
-    tensorboard_dir: Optional[str]
-    no_progress_bar: bool
+    task: str  # 训练任务标识，例如 "nli"、"stsb" 或 "gis"
+    method: str  # 训练策略，例如 "baseline"（纯对比）或 "aoe"（角度+对比）
+    backbone: str  # 预训练模型名称，例如 "bert-base-uncased"
+    batch_size: int  # 每次迭代的样本批量，例如 256
+    epochs: int  # 训练轮数，例如 3
+    lr: float  # 学习率，例如 2e-5
+    max_length: int  # 输入文本截断长度，例如 128
+    temperature_cl: float  # 对比损失温度系数，例如 0.05
+    temperature_angle: float  # 角度损失温度系数，例如 0.05
+    w_cl: float  # 对比损失权重，例如 1.0
+    w_angle: float  # 角度损失权重，例如 1.0
+    output_dir: str  # 运行结果根目录，例如 "output"
+    run_name: str  # 运行名称，用于区分实验，例如 "bert_nli_aoe"
+    data_cache: Optional[str]  # 数据缓存目录，例如 "data"；可为 None 使用默认值
+    model_cache: Optional[str]  # 模型缓存目录，例如 "models"；可为 None
+    seed: int  # 随机种子，例如 42
+    eval_split: Optional[str]  # 验证集名称，例如 "validation" 或 "none"
+    eval_batch_size: Optional[int]  # 验证批量大小，例如 512；None 表示沿用训练批量
+    metrics_path: Optional[str]  # 自定义指标文件路径，例如 "output/logs/nli.jsonl" 或 "none"
+    tensorboard_dir: Optional[str]  # TensorBoard 目录，例如 "output/tensorboard" 或 "none"
+    no_progress_bar: bool  # 是否禁用 tqdm 进度条，例如 True 表示关闭
 
     @classmethod
     def from_args(cls, args: object) -> "TrainConfig":
