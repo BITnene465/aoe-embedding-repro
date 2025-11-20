@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import random
+from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -284,6 +285,72 @@ def resolve_tensorboard_dir(default_dir: str, override: Optional[str]) -> Option
     return override
 
 
+@dataclass
+class TrainConfig:
+    task: str
+    method: str
+    backbone: str
+    batch_size: int
+    epochs: int
+    lr: float
+    max_length: int
+    temperature_cl: float
+    temperature_angle: float
+    w_cl: float
+    w_angle: float
+    output_dir: str
+    run_name: str
+    data_cache: Optional[str]
+    model_cache: Optional[str]
+    seed: int
+    eval_split: Optional[str]
+    eval_batch_size: Optional[int]
+    metrics_path: Optional[str]
+    tensorboard_dir: Optional[str]
+    no_progress_bar: bool
+
+    @classmethod
+    def from_args(cls, args: object) -> "TrainConfig":
+        return cls(
+            task=getattr(args, "task"),
+            method=getattr(args, "method"),
+            backbone=getattr(args, "backbone"),
+            batch_size=getattr(args, "batch_size"),
+            epochs=getattr(args, "epochs"),
+            lr=getattr(args, "lr"),
+            max_length=getattr(args, "max_length"),
+            temperature_cl=getattr(args, "temperature_cl"),
+            temperature_angle=getattr(args, "temperature_angle"),
+            w_cl=getattr(args, "w_cl"),
+            w_angle=getattr(args, "w_angle"),
+            output_dir=getattr(args, "output_dir"),
+            run_name=getattr(args, "run_name", "default"),
+            data_cache=getattr(args, "data_cache", None),
+            model_cache=getattr(args, "model_cache", None),
+            seed=getattr(args, "seed", 42),
+            eval_split=getattr(args, "eval_split", None),
+            eval_batch_size=getattr(args, "eval_batch_size", None),
+            metrics_path=getattr(args, "metrics_path", None),
+            tensorboard_dir=getattr(args, "tensorboard_dir", None),
+            no_progress_bar=getattr(args, "no_progress_bar", False),
+        )
+
+    def to_dict(self) -> Dict[str, object]:
+        return asdict(self)
+
+    def filtered_hparams(self) -> Dict[str, object]:
+        return {
+            key: value
+            for key, value in self.to_dict().items()
+            if isinstance(value, (int, float, str, bool))
+        }
+
+    def save_json(self, path: str) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(self.to_dict(), handle, indent=2)
+
+
 __all__ = [
     "TextPairDataset",
     "set_seed",
@@ -293,4 +360,5 @@ __all__ = [
     "resolve_metrics_path",
     "append_metrics",
     "resolve_tensorboard_dir",
+    "TrainConfig",
 ]

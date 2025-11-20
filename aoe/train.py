@@ -1,4 +1,4 @@
-"""Training entry points for AoE models."""
+"""Training entry point for AoE models."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from aoe.model import SentenceEncoder
 from aoe.train_utils import (
+    TrainConfig,
     append_metrics,
     build_dataloader,
     evaluate_epoch,
@@ -23,44 +24,35 @@ from aoe.train_utils import (
 )
 
 
-def save_checkpoint(
-    encoder: SentenceEncoder,
-    output_dir: str,
-    model_name: str,
-) -> None:
-    """Persist model weights and minimal config to disk."""
+def save_checkpoint(encoder: SentenceEncoder, ckpt_dir: str) -> None:
+    """Persist encoder weights and a minimal config to disk."""
 
-    os.makedirs(output_dir, exist_ok=True)
-    model_path = os.path.join(output_dir, "model.pt")
-    config_path = os.path.join(output_dir, "config.json")
-
-    torch.save(encoder.state_dict(), model_path)
-
-    config = {
-        "model_name": model_name,
+    os.makedirs(ckpt_dir, exist_ok=True)
+    torch.save(encoder.state_dict(), os.path.join(ckpt_dir, "model.pt"))
+    snapshot = {
+        "model_name": getattr(encoder, "model_name", None),
         "complex_mode": encoder.complex_mode,
         "pooling": encoder.pooling,
     }
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+    with open(os.path.join(ckpt_dir, "config.json"), "w", encoding="utf-8") as handle:
+        json.dump(snapshot, handle, indent=2)
 
 
 def _prepare_run_dirs(base_dir: str, run_name: str) -> dict[str, str]:
-    run_name = run_name or "default"
-    run_dir = os.path.join(base_dir, run_name)
+    run_dir = os.path.join(base_dir, run_name or "default")
     paths = {
         "run": run_dir,
         "ckpt": os.path.join(run_dir, "ckpt"),
         "tensorboard_default": os.path.join(run_dir, "tensorboard"),
         "metrics_default": os.path.join(run_dir, "metrics.jsonl"),
+        "config": os.path.join(run_dir, "train_config.json"),
     }
+    os.makedirs(run_dir, exist_ok=True)
     os.makedirs(paths["ckpt"], exist_ok=True)
     return paths
 
 
-def main() -> None:
-    """CLI entry point for training baseline or AoE sentence encoders."""
-
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train AoE or baseline sentence encoders")
     parser.add_argument("--task", choices=["nli", "stsb", "gis"], required=True)
     parser.add_argument("--method", choices=["baseline", "aoe"], default="baseline")
@@ -93,78 +85,84 @@ def main() -> None:
     parser.add_argument(
         "--metrics_path",
         default=None,
-        help="Path to JSONL metrics log; defaults to <output_dir>/<run_name>/metrics.jsonl; use 'none' to disable",
+        help="Path to JSONL metrics log; defaults to <output>/<run>/metrics.jsonl; use 'none' to disable",
     )
     parser.add_argument(
         "--tensorboard_dir",
         default=None,
-        help="Directory for TensorBoard event files; defaults to <output_dir>/<run_name>/tensorboard; use 'none' to disable",
+        help="Directory for TensorBoard event files; defaults to <output>/<run>/tensorboard; use 'none' to disable",
     )
+    return parser
 
+
+def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
+    config = TrainConfig.from_args(args)
 
-    set_seed(args.seed)
+    set_seed(config.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    run_dirs = _prepare_run_dirs(args.output_dir, args.run_name)
+    run_dirs = _prepare_run_dirs(config.output_dir, config.run_name)
+    config.save_json(run_dirs["config"])
 
     encoder = SentenceEncoder(
-        model_name=args.backbone,
-        complex_mode=args.method == "aoe",
+        model_name=config.backbone,
+        complex_mode=config.method == "aoe",
         pooling="cls",
-        cache_dir=args.model_cache,
+        cache_dir=config.model_cache,
     ).to(device)
 
-    dataloader = build_dataloader(
-        task=args.task,
+    train_loader = build_dataloader(
+        task=config.task,
         split="train",
-        batch_size=args.batch_size,
-        cache_dir=args.data_cache,
+        batch_size=config.batch_size,
+        cache_dir=config.data_cache,
     )
 
-    optimizer = AdamW(encoder.parameters(), lr=args.lr)
+    optimizer = AdamW(encoder.parameters(), lr=config.lr)
 
     eval_loader: DataLoader | None = None
-    eval_split = args.eval_split or ""
-    if eval_split and eval_split.lower() != "none":
+    eval_split = (config.eval_split or "").lower()
+    if eval_split and eval_split != "none":
         eval_loader = build_dataloader(
-            task=args.task,
-            split=eval_split,
-            batch_size=args.eval_batch_size or args.batch_size,
-            cache_dir=args.data_cache,
+            task=config.task,
+            split=config.eval_split,
+            batch_size=config.eval_batch_size or config.batch_size,
+            cache_dir=config.data_cache,
         )
 
-    metrics_path = resolve_metrics_path(run_dirs["metrics_default"], args.metrics_path)
+    metrics_path = resolve_metrics_path(run_dirs["metrics_default"], config.metrics_path)
     if metrics_path is not None:
         os.makedirs(os.path.dirname(metrics_path) or ".", exist_ok=True)
-        with open(metrics_path, "w", encoding="utf-8") as f:
-            f.write("")
+        with open(metrics_path, "w", encoding="utf-8") as handle:
+            handle.write("")
 
     writer: SummaryWriter | None = None
-    tb_dir = resolve_tensorboard_dir(run_dirs["tensorboard_default"], args.tensorboard_dir)
+    tb_dir = resolve_tensorboard_dir(run_dirs["tensorboard_default"], config.tensorboard_dir)
     if tb_dir is not None:
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_dir)
-        writer.add_text("args/json", json.dumps(vars(args), indent=2, default=str), 0)
+        writer.add_text("train_config/json", json.dumps(config.to_dict(), indent=2), 0)
 
     eval_angle = eval_contrast = eval_total = None
     angle_avg = contrast_avg = total_avg = 0.0
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, config.epochs + 1):
         angle_avg, contrast_avg, total_avg = train_epoch(
             encoder,
-            dataloader,
+            train_loader,
             optimizer,
             device,
-            args.method,
-            tau_cl=args.temperature_cl,
-            tau_angle=args.temperature_angle,
-            w_cl=args.w_cl,
-            w_angle=args.w_angle,
-            max_length=args.max_length,
+            config.method,
+            tau_cl=config.temperature_cl,
+            tau_angle=config.temperature_angle,
+            w_cl=config.w_cl,
+            w_angle=config.w_angle,
+            max_length=config.max_length,
             epoch_idx=epoch,
-            total_epochs=args.epochs,
-            show_progress=not args.no_progress_bar,
+            total_epochs=config.epochs,
+            show_progress=not config.no_progress_bar,
         )
 
         eval_angle = eval_contrast = eval_total = None
@@ -173,13 +171,14 @@ def main() -> None:
                 encoder,
                 eval_loader,
                 device,
-                args.method,
-                tau_cl=args.temperature_cl,
-                tau_angle=args.temperature_angle,
-                w_cl=args.w_cl,
-                w_angle=args.w_angle,
-                max_length=args.max_length,
+                config.method,
+                tau_cl=config.temperature_cl,
+                tau_angle=config.temperature_angle,
+                w_cl=config.w_cl,
+                w_angle=config.w_angle,
+                max_length=config.max_length,
             )
+
         message = (
             f"Epoch {epoch}: train_angle={angle_avg:.4f} train_contrast={contrast_avg:.4f} "
             f"train_total={total_avg:.4f}"
@@ -199,7 +198,7 @@ def main() -> None:
                 "train_contrast": contrast_avg,
                 "train_total": total_avg,
             }
-            if eval_total is not None and eval_angle is not None and eval_contrast is not None:
+            if eval_total is not None:
                 record.update(
                     {
                         "eval_angle": eval_angle,
@@ -213,12 +212,12 @@ def main() -> None:
             writer.add_scalar("loss/train_total", total_avg, epoch)
             writer.add_scalar("loss/train_angle", angle_avg, epoch)
             writer.add_scalar("loss/train_contrast", contrast_avg, epoch)
-            if eval_total is not None and eval_angle is not None and eval_contrast is not None:
+            if eval_total is not None:
                 writer.add_scalar("loss/eval_total", eval_total, epoch)
                 writer.add_scalar("loss/eval_angle", eval_angle, epoch)
                 writer.add_scalar("loss/eval_contrast", eval_contrast, epoch)
 
-    save_checkpoint(encoder, run_dirs["ckpt"], args.backbone)
+    save_checkpoint(encoder, run_dirs["ckpt"])
 
     if writer is not None:
         final_metrics = {
@@ -226,7 +225,7 @@ def main() -> None:
             "train_angle": angle_avg,
             "train_contrast": contrast_avg,
         }
-        if eval_total is not None and eval_angle is not None and eval_contrast is not None:
+        if eval_total is not None:
             final_metrics.update(
                 {
                     "eval_total": eval_total,
@@ -234,7 +233,7 @@ def main() -> None:
                     "eval_contrast": eval_contrast,
                 }
             )
-        writer.add_hparams({k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, bool))}, final_metrics)
+        writer.add_hparams(config.filtered_hparams(), final_metrics)
         writer.flush()
         writer.close()
 
