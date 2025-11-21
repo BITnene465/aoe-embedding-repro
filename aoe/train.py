@@ -26,17 +26,14 @@ from aoe.train_utils import (
 
 
 def save_checkpoint(encoder: SentenceEncoder, ckpt_dir: str) -> None:
-    """Persist encoder weights and a minimal config to disk."""
+    """Persist the full SentenceEncoder object for direct torch.load usage."""
 
     os.makedirs(ckpt_dir, exist_ok=True)
-    torch.save(encoder.state_dict(), os.path.join(ckpt_dir, "model.pt"))
-    snapshot = {
-        "model_name": getattr(encoder, "model_name", None),
-        "complex_mode": encoder.complex_mode,
-        "pooling": encoder.pooling,
-    }
-    with open(os.path.join(ckpt_dir, "config.json"), "w", encoding="utf-8") as handle:
-        json.dump(snapshot, handle, indent=2)
+    ckpt_path = os.path.join(ckpt_dir, "encoder.pt")
+    original_device = next(encoder.parameters()).device
+    encoder.to("cpu")
+    torch.save(encoder, ckpt_path)
+    encoder.to(original_device)
 
 
 def _prepare_run_dirs(base_dir: str, run_name: str) -> dict[str, str]:

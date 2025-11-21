@@ -17,24 +17,13 @@ from aoe.model import SentenceEncoder
 
 
 def load_encoder_from_ckpt(ckpt: str, model_cache: str | None = None) -> SentenceEncoder:
-    """Instantiate a SentenceEncoder using weights and config from ``ckpt``."""
+    """Instantiate a SentenceEncoder from a full-object checkpoint."""
 
-    config_path = os.path.join(ckpt, "config.json")
-    model_path = os.path.join(ckpt, "model.pt")
-    if not os.path.exists(config_path) or not os.path.exists(model_path):
-        raise FileNotFoundError(f"Checkpoint files not found in {ckpt}")
+    ckpt_path = os.path.join(ckpt, "encoder.pt")
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(f"Expected checkpoint at {ckpt_path}")
 
-    with open(config_path, "r", encoding="utf-8") as handle:
-        config = json.load(handle)
-
-    encoder = SentenceEncoder(
-        model_name=config.get("model_name", "bert-base-uncased"),
-        complex_mode=config.get("complex_mode", False),
-        pooling=config.get("pooling", "cls"),
-        cache_dir=model_cache,
-    )
-    state_dict = torch.load(model_path, map_location="cpu")
-    encoder.load_state_dict(state_dict)
+    encoder = torch.load(ckpt_path, map_location="cpu")
     encoder.eval()
     return encoder
 

@@ -28,6 +28,7 @@ class SentenceEncoder(nn.Module):
 		self.complex_mode = complex_mode
 		self.pooling = pooling
 		self.cache_dir = cache_dir
+		self.model_name = model_name
 
 		for param in self.model.parameters():
 			param.requires_grad = True
