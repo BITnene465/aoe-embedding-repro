@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 from dataclasses import asdict, dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from tqdm.auto import tqdm
 
 from aoe.data import load_gis_splits, load_nli_dataset, load_stsb_splits
@@ -31,6 +32,67 @@ class TextPairDataset(Dataset):
 
     def __getitem__(self, index: int) -> Tuple[str, str, int]:
         return self._pairs[index]
+
+
+class StratifiedBatchSampler(Sampler[List[int]]):
+    """Batch sampler that keeps label diversity inside every batch when possible."""
+
+    def __init__(self, labels: Iterable[int], batch_size: int, shuffle: bool = True) -> None:
+        labels_list = list(int(label) for label in labels)
+        if not labels_list:
+            raise ValueError("labels must be non-empty for stratified sampling")
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive for stratified sampling")
+        self._labels = labels_list
+        self._batch_size = batch_size
+        self._shuffle = shuffle
+        self._label_to_indices: Dict[int, List[int]] = {}
+        for idx, label in enumerate(self._labels):
+            self._label_to_indices.setdefault(label, []).append(idx)
+
+    def __len__(self) -> int:  # pragma: no cover - deterministic calculation
+        return math.ceil(len(self._labels) / self._batch_size)
+
+    def __iter__(self):  # type: ignore[override]
+        label_pools = {label: indices.copy() for label, indices in self._label_to_indices.items()}
+        if self._shuffle:
+            for pool in label_pools.values():
+                random.shuffle(pool)
+
+        remaining = sum(len(pool) for pool in label_pools.values())
+        batch_size = self._batch_size
+
+        while remaining > 0:
+            limit = min(batch_size, remaining)
+            batch: List[int] = []
+            active_labels = [label for label, pool in label_pools.items() if pool]
+            if self._shuffle:
+                random.shuffle(active_labels)
+
+            while len(batch) < limit and active_labels:
+                made_progress = False
+                for label in list(active_labels):
+                    if len(batch) >= limit:
+                        break
+                    pool = label_pools[label]
+                    if not pool:
+                        active_labels.remove(label)
+                        continue
+                    batch.append(pool.pop())
+                    remaining -= 1
+                    made_progress = True
+                    if not pool:
+                        active_labels.remove(label)
+                if len(batch) < limit:
+                    active_labels = [label for label, pool in label_pools.items() if pool]
+                    if self._shuffle:
+                        random.shuffle(active_labels)
+                if not made_progress:
+                    break
+
+            if not batch:
+                break
+            yield batch
 
 
 def _collate_batch(batch: List[Tuple[str, str, int]]) -> Tuple[List[str], List[str], torch.LongTensor]:
@@ -114,6 +176,16 @@ def build_dataloader(task: str, split: str, batch_size: int, cache_dir: Optional
         raise ValueError("task must be one of {'nli', 'stsb', 'gis'}")
 
     dataset = TextPairDataset(pairs)
+    labels = [label for _, _, label in pairs]
+
+    if split == "train" and len(set(labels)) > 1 and batch_size > 1:
+        batch_sampler = StratifiedBatchSampler(labels, batch_size=batch_size, shuffle=True)
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=_collate_batch,
+        )
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
