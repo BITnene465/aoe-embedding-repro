@@ -36,22 +36,25 @@ pip install -r requirements.txt
 
 ### Train an encoder
 
-The training CLI now materializes a dedicated run directory at `<output_dir>/<run_name>` and snapshots every hyperparameter into `train_config.json` for easy provenance tracking.
+The training CLI follows the exact AnglE setup: every batch contains zigzag sentence pairs from an STS dataset, complex embeddings are produced in `SentenceEncoder`, and the AoE loss combines the CoSENT ranking angle with an InfoNCE contrastive term.
 
 ```bash
 python -m aoe.train \
-	--task nli \
-	--method aoe \
-	--run_name bert_nli_aoe \
+	--dataset stsb \
+	--train_split train \
+	--eval_split validation \
+	--run_name bert_stsb_aoe \
 	--output_dir output \
 	--epochs 3 \
-	--batch_size 128 \
+	--batch_size 64 \
 	--grad_accum_steps 8 \
-	--warmup_steps 600 \
-	--eval_split validation
+	--angle_tau 20 \
+	--cl_scale 20 \
+	--w_angle 0.02 \
+	--w_cl 1.0
 ```
 
-This command creates `output/bert_nli_aoe/ckpt/encoder.pt` (entire `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
+Every run writes `output/<run_name>/ckpt/encoder.pt` (full `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
 
 ### Evaluate a checkpoint
 
@@ -66,16 +69,7 @@ Use `--datasets sts_all` to evaluate STS-B, GIS, and SICK-R in one shot. The eva
 
 ### Helper scripts
 
-Common experiment recipes live under `scripts/`. For example:
-
-```bash
-bash scripts/train_nli_aoe.sh
-bash scripts/train_nli_baseline.sh
-bash scripts/eval_sts_all.sh
-bash scripts/run_all_experiments.sh  # trains baseline + AoE + STS and runs eval/analysis
-```
-
-Feel free to copy these scripts and adapt hyperparameters or `run_name` values for your own runs.
+`run_all_experiments.sh` orchestrates the full paper workflow: it trains a pure contrastive baseline (`w_angle=0`), trains the AoE model (`w_angle=0.02`), evaluates the AoE checkpoint on STS-B/GIS/SICK-R, and finally runs the cosine saturation analysis from the paper. Feel free to copy the script and adapt hyperparameters or `run_name` values for your own runs.
 
 ```python
 from aoe.model import SentenceEncoder
@@ -96,7 +90,10 @@ embeddings_re, embeddings_im = complex_encoder.encode(sentences)
 
 ## Implementation Details
 
-The training objective follows a simplified AoE-inspired design: we measure angle differences between complex sentence embeddings so that high-similarity pairs keep smaller angles, and combine that signal with a supervised contrastive objective. The final loss is a weighted sum of the angle-ranking term and the contrastive loss, preserving the key intuition of AoE without reproducing every detail from the original paper.
+- **Loss**: The new `aoe.loss` module matches the official AnglE engineering. `angle_loss` implements the complex division / pooling pipeline from the paper and performs CoSENT-style pair-of-pairs ranking with `tau=20`. `supervised_contrastive_loss` mirrors Eq.(4) (InfoNCE with aligned anchors/positives). `aoe_total_loss` combines the two with weights `w_angle=0.02`, `w_cl=1.0`.
+- **Data pipeline**: `aoe.train_utils` now builds zigzag batches straight from STS-style datasets (currently STS-B, GIS, SICK-R). Each batch looks like `[s0_1, s0_2, s1_1, s1_2, ...]`, and the matching scores are injected into `y_true` so the loss can build the order matrix.
+- **Encoder**: `SentenceEncoder` always runs in `complex_mode=True` for AoE training. The real and imaginary parts are concatenated after encoding so the loss sees `[2 * dim]` features per text as required by AnglE.
+- **Logging/checkpointing**: Every run records the full `TrainConfig`, metrics JSONL, and TensorBoard summaries. Checkpoints store the entire encoder object for direct `torch.load` usage.
 
 ## Cache & Output Layout
 
@@ -109,9 +106,8 @@ The training objective follows a simplified AoE-inspired design: we measure angl
 
 ## Datasets
 
-- SNLI (`snli`) + MultiNLI (`multi_nli`) for supervised NLI pretraining.
-- STS-B (`glue`, config `stsb`) as a standard English STS benchmark.
-- GitHub Issue Similarity (`WhereIsAI/github-issue-similarity`) for in-domain STS-style evaluation.
+- **Training**: AoE is trained on STS-style sentence pairs with gold similarity scores. The default workflow uses STS-B train for optimization and STS-B validation for monitoring.
+- **Evaluation**: `aoe.eval_sts` evaluates checkpoints on STS-B test, GIS, and SICK-R, reporting Spearman correlations just like the paper. Additional classic STS sets (STS12-16) can be wired up via `aoe.data.load_angle_pairs` if needed.
 
 ## Analysis
 

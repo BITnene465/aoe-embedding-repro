@@ -16,7 +16,7 @@ from aoe.model import SentenceEncoder
 from aoe.train_utils import (
     TrainConfig,
     append_metrics,
-    build_dataloader,
+    build_angle_dataloader,
     evaluate_epoch,
     resolve_metrics_path,
     resolve_tensorboard_dir,
@@ -51,29 +51,30 @@ def _prepare_run_dirs(base_dir: str, run_name: str) -> dict[str, str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train AoE or baseline sentence encoders")
-    parser.add_argument("--task", choices=["nli", "stsb", "gis"], required=True)
-    parser.add_argument("--method", choices=["baseline", "aoe"], default="baseline")
+    parser = argparse.ArgumentParser(description="Train AoE sentence encoders")
+    parser.add_argument("--dataset", choices=["stsb", "sickr", "gis"], default="stsb")
+    parser.add_argument("--train_split", default="train")
+    parser.add_argument(
+        "--eval_split",
+        default="validation",
+        help="Validation split name; use 'none' to skip evaluation",
+    )
     parser.add_argument("--backbone", default="bert-base-uncased")
+    parser.add_argument("--pooling", choices=["cls", "mean"], default="cls")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max_length", type=int, default=128)
-    parser.add_argument("--temperature_cl", type=float, default=0.05)
-    parser.add_argument("--temperature_angle", type=float, default=0.05)
+    parser.add_argument("--angle_tau", type=float, default=20.0)
+    parser.add_argument("--cl_scale", type=float, default=20.0)
+    parser.add_argument("--w_angle", type=float, default=0.02)
     parser.add_argument("--w_cl", type=float, default=1.0)
-    parser.add_argument("--w_angle", type=float, default=1.0)
     parser.add_argument("--output_dir", default="output")
     parser.add_argument("--run_name", default="default")
     parser.add_argument("--data_cache", default="data")
     parser.add_argument("--model_cache", default="models")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_progress_bar", action="store_true")
-    parser.add_argument(
-        "--eval_split",
-        default="validation",
-        help="Validation split name; use 'none' to skip evaluation",
-    )
     parser.add_argument(
         "--eval_batch_size",
         type=int,
@@ -118,16 +119,17 @@ def main() -> None:
 
     encoder = SentenceEncoder(
         model_name=config.backbone,
-        complex_mode=config.method == "aoe",
-        pooling="cls",
+        complex_mode=True,
+        pooling=config.pooling,
         cache_dir=config.model_cache,
     ).to(device)
 
-    train_loader = build_dataloader(
-        task=config.task,
-        split="train",
+    train_loader = build_angle_dataloader(
+        dataset=config.dataset,
+        split=config.train_split,
         batch_size=config.batch_size,
         cache_dir=config.data_cache,
+        shuffle=True,
     )
 
     optimizer = AdamW(encoder.parameters(), lr=config.lr)
@@ -143,11 +145,12 @@ def main() -> None:
     eval_loader: DataLoader | None = None
     eval_split = (config.eval_split or "").lower()
     if eval_split and eval_split != "none":
-        eval_loader = build_dataloader(
-            task=config.task,
+        eval_loader = build_angle_dataloader(
+            dataset=config.dataset,
             split=config.eval_split,
             batch_size=config.eval_batch_size or config.batch_size,
             cache_dir=config.data_cache,
+            shuffle=False,
         )
 
     metrics_path = resolve_metrics_path(run_dirs["metrics_default"], config.metrics_path)
@@ -185,11 +188,10 @@ def main() -> None:
             train_loader,
             optimizer,
             device,
-            config.method,
-            tau_cl=config.temperature_cl,
-            tau_angle=config.temperature_angle,
-            w_cl=config.w_cl,
+            angle_tau=config.angle_tau,
+            cl_scale=config.cl_scale,
             w_angle=config.w_angle,
+            w_cl=config.w_cl,
             max_length=config.max_length,
             epoch_idx=epoch,
             total_epochs=config.epochs,
@@ -205,11 +207,10 @@ def main() -> None:
                 encoder,
                 eval_loader,
                 device,
-                config.method,
-                tau_cl=config.temperature_cl,
-                tau_angle=config.temperature_angle,
-                w_cl=config.w_cl,
+                angle_tau=config.angle_tau,
+                cl_scale=config.cl_scale,
                 w_angle=config.w_angle,
+                w_cl=config.w_cl,
                 max_length=config.max_length,
                 show_progress=not config.no_progress_bar,
             )

@@ -1,6 +1,6 @@
 """Data loading and preprocessing utilities for AoE experiments."""
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
@@ -140,3 +140,51 @@ def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
             remove_columns=split_ds.column_names,
         )
     return splits
+
+
+def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
+    pairs: List[Dict[str, object]] = []
+    for example in dataset:
+        sent1 = example.get("sentence1")
+        sent2 = example.get("sentence2")
+        score = example.get("score")
+        if sent1 is None or sent2 is None or score is None:
+            continue
+        try:
+            score_val = float(score)
+        except (TypeError, ValueError):
+            continue
+        pairs.append(
+            {
+                "sentence1": str(sent1),
+                "sentence2": str(sent2),
+                "score": score_val,
+            }
+        )
+    if not pairs:
+        raise ValueError("Requested dataset split does not contain scored examples")
+    return pairs
+
+
+def load_angle_pairs(dataset: str, split: str, cache_dir: Optional[str] = "data") -> List[Dict[str, object]]:
+    dataset = (dataset or "").lower()
+    split_norm = (split or "").lower()
+
+    if dataset == "stsb":
+        splits = load_stsb_splits(cache_dir=cache_dir)
+        if split_norm not in splits:
+            raise ValueError(f"STS-B split '{split}' is unavailable")
+        return _dataset_to_angle_pairs(splits[split_norm])
+
+    if dataset == "gis":
+        splits = load_gis_splits(cache_dir=cache_dir)
+        if split_norm not in splits:
+            raise ValueError(f"GIS split '{split}' is unavailable")
+        return _dataset_to_angle_pairs(splits[split_norm])
+
+    if dataset == "sickr":
+        if split_norm not in {"validation", "val", "dev", "test"}:
+            raise ValueError("SICK-R exposes only the validation split for scored data")
+        return _dataset_to_angle_pairs(load_sickr_split(cache_dir=cache_dir))
+
+    raise ValueError(f"Unknown dataset '{dataset}' for AoE angle training")

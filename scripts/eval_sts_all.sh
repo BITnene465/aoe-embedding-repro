@@ -2,5 +2,5 @@
 set -euo pipefail
 
 python -m aoe.eval_sts \
-  --ckpt output/bert_nli_aoe/ckpt \
+  --ckpt output/bert_stsb_aoe/ckpt \
   --datasets stsb,gis

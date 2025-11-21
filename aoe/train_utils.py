@@ -3,101 +3,64 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import random
 from dataclasses import asdict, dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from aoe.data import load_gis_splits, load_nli_dataset, load_stsb_splits
-from aoe.loss import aoe_total_loss, supervised_contrastive_loss
+from aoe.data import load_angle_pairs
+from aoe.loss import aoe_total_loss
 from aoe.model import SentenceEncoder
 
 
-class TextPairDataset(Dataset):
-    """Simple dataset wrapper for paired sentences and labels."""
+class AnglePairDataset(Dataset):
+    """Dataset of text pairs with real-valued similarity scores."""
 
-    def __init__(self, pairs: List[Tuple[str, str, int]]) -> None:
+    def __init__(self, pairs: List[Dict[str, object]]) -> None:
         if not pairs:
-            raise ValueError("Dataset is empty; cannot build dataloader")
+            raise ValueError("AoE dataset is empty; cannot build dataloader")
         self._pairs = pairs
 
     def __len__(self) -> int:  # pragma: no cover - trivial passthrough
         return len(self._pairs)
 
-    def __getitem__(self, index: int) -> Tuple[str, str, int]:
+    def __getitem__(self, index: int) -> Dict[str, object]:
         return self._pairs[index]
 
 
-class StratifiedBatchSampler(Sampler[List[int]]):
-    """Batch sampler that keeps label diversity inside every batch when possible."""
-
-    def __init__(self, labels: Iterable[int], batch_size: int, shuffle: bool = True) -> None:
-        labels_list = list(int(label) for label in labels)
-        if not labels_list:
-            raise ValueError("labels must be non-empty for stratified sampling")
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive for stratified sampling")
-        self._labels = labels_list
-        self._batch_size = batch_size
-        self._shuffle = shuffle
-        self._label_to_indices: Dict[int, List[int]] = {}
-        for idx, label in enumerate(self._labels):
-            self._label_to_indices.setdefault(label, []).append(idx)
-
-    def __len__(self) -> int:  # pragma: no cover - deterministic calculation
-        return math.ceil(len(self._labels) / self._batch_size)
-
-    def __iter__(self):  # type: ignore[override]
-        label_pools = {label: indices.copy() for label, indices in self._label_to_indices.items()}
-        if self._shuffle:
-            for pool in label_pools.values():
-                random.shuffle(pool)
-
-        remaining = sum(len(pool) for pool in label_pools.values())
-        batch_size = self._batch_size
-
-        while remaining > 0:
-            limit = min(batch_size, remaining)
-            batch: List[int] = []
-            active_labels = [label for label, pool in label_pools.items() if pool]
-            if self._shuffle:
-                random.shuffle(active_labels)
-
-            while len(batch) < limit and active_labels:
-                made_progress = False
-                for label in list(active_labels):
-                    if len(batch) >= limit:
-                        break
-                    pool = label_pools[label]
-                    if not pool:
-                        active_labels.remove(label)
-                        continue
-                    batch.append(pool.pop())
-                    remaining -= 1
-                    made_progress = True
-                    if not pool:
-                        active_labels.remove(label)
-                if len(batch) < limit:
-                    active_labels = [label for label, pool in label_pools.items() if pool]
-                    if self._shuffle:
-                        random.shuffle(active_labels)
-                if not made_progress:
-                    break
-
-            if not batch:
-                break
-            yield batch
+def _angle_collate(batch: Sequence[Dict[str, object]]) -> Tuple[List[str], torch.Tensor]:
+    texts: List[str] = []
+    scores: List[float] = []
+    for example in batch:
+        sent1 = str(example["sentence1"])
+        sent2 = str(example["sentence2"])
+        score = float(example["score"])
+        texts.extend([sent1, sent2])
+        scores.extend([score, score])
+    return texts, torch.tensor(scores, dtype=torch.float32)
 
 
-def _collate_batch(batch: List[Tuple[str, str, int]]) -> Tuple[List[str], List[str], torch.LongTensor]:
-    texts1, texts2, labels = zip(*batch)
-    return list(texts1), list(texts2), torch.tensor(labels, dtype=torch.long)
+def build_angle_dataloader(
+    dataset: str,
+    split: str,
+    batch_size: int,
+    cache_dir: Optional[str],
+    shuffle: bool,
+) -> DataLoader:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    pairs = load_angle_pairs(dataset, split, cache_dir)
+    return DataLoader(
+        AnglePairDataset(pairs),
+        batch_size=batch_size,
+        shuffle=shuffle,
+        collate_fn=_angle_collate,
+    )
 
 
 def set_seed(seed: int) -> None:
@@ -107,132 +70,17 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def _nli_pairs(split: str, cache_dir: Optional[str]) -> List[Tuple[str, str, int]]:
-    dataset = load_nli_dataset(split, cache_dir=cache_dir)
-    pairs: List[Tuple[str, str, int]] = []
-    for example in dataset:
-        premise = example.get("premise")
-        hypothesis = example.get("hypothesis")
-        label = example.get("label")
-        if premise is None or hypothesis is None or label is None:
-            continue
-        label_int = int(label)
-        if label_int < 0:
-            continue
-        pairs.append((str(premise), str(hypothesis), label_int))
-    if not pairs:
-        raise ValueError(f"No valid NLI pairs found for split '{split}'")
-    return pairs
-
-
-def _stsb_pairs(split: str, cache_dir: Optional[str]) -> List[Tuple[str, str, int]]:
-    splits = load_stsb_splits(cache_dir=cache_dir)
-    if split not in splits:
-        raise ValueError(f"STS-B split '{split}' is unavailable")
-    dataset = splits[split]
-    pairs: List[Tuple[str, str, int]] = []
-    for example in dataset:
-        sent1 = example.get("sentence1")
-        sent2 = example.get("sentence2")
-        score = example.get("score")
-        if sent1 is None or sent2 is None or score is None:
-            continue
-        score_val = float(score)
-        label = int(score_val > 2.5)
-        pairs.append((str(sent1), str(sent2), label))
-    if not pairs:
-        raise ValueError(f"No valid STS-B pairs found for split '{split}'")
-    return pairs
-
-
-def _gis_pairs(split: str, cache_dir: Optional[str]) -> List[Tuple[str, str, int]]:
-    splits = load_gis_splits(cache_dir=cache_dir)
-    if split not in splits:
-        raise ValueError(f"GIS split '{split}' is unavailable")
-    dataset = splits[split]
-    pairs: List[Tuple[str, str, int]] = []
-    for example in dataset:
-        sent1 = example.get("sentence1")
-        sent2 = example.get("sentence2")
-        score = example.get("score")
-        if sent1 is None or sent2 is None or score is None:
-            continue
-        score_val = float(score)
-        label = int(score_val > 0.5)
-        pairs.append((str(sent1), str(sent2), label))
-    if not pairs:
-        raise ValueError(f"No valid GIS pairs found for split '{split}'")
-    return pairs
-
-
-def build_dataloader(task: str, split: str, batch_size: int, cache_dir: Optional[str]) -> DataLoader:
-    if task == "nli":
-        pairs = _nli_pairs(split, cache_dir)
-    elif task == "stsb":
-        pairs = _stsb_pairs(split, cache_dir)
-    elif task == "gis":
-        pairs = _gis_pairs(split, cache_dir)
-    else:
-        raise ValueError("task must be one of {'nli', 'stsb', 'gis'}")
-
-    dataset = TextPairDataset(pairs)
-    labels = [label for _, _, label in pairs]
-
-    if split == "train" and len(set(labels)) > 1 and batch_size > 1:
-        batch_sampler = StratifiedBatchSampler(labels, batch_size=batch_size, shuffle=True)
-        return DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
-            collate_fn=_collate_batch,
-        )
-
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=split == "train",
-        collate_fn=_collate_batch,
-    )
-
-
-def _forward_step(
+def _encode_zigzag(
     encoder: SentenceEncoder,
-    texts1: List[str],
-    texts2: List[str],
-    labels: torch.LongTensor,
+    texts: List[str],
     device: torch.device,
-    method: str,
-    tau_cl: float,
-    tau_angle: float,
-    w_cl: float,
-    w_angle: float,
     max_length: int,
-) -> Tuple[torch.Tensor, float, float]:
-    if method == "baseline":
-        z1 = encoder.encode(texts1, device=device, max_length=max_length)
-        z2 = encoder.encode(texts2, device=device, max_length=max_length)
-        embeddings = torch.cat([z1, z2], dim=0)
-        labels_cat = torch.cat([labels, labels], dim=0)
-        cl_loss = supervised_contrastive_loss(embeddings, labels_cat, tau_cl)
-        return cl_loss, 0.0, cl_loss.item()
-
-    if method == "aoe":
-        z1_re, z1_im = encoder.encode(texts1, device=device, max_length=max_length)
-        z2_re, z2_im = encoder.encode(texts2, device=device, max_length=max_length)
-        z_re = torch.cat([z1_re, z2_re], dim=0)
-        z_im = torch.cat([z1_im, z2_im], dim=0)
-        labels_cat = torch.cat([labels, labels], dim=0)
-        loss, stats = aoe_total_loss(
-            z_re,
-            z_im,
-            labels_cat,
-            tau_angle=tau_angle,
-            tau_cl=tau_cl,
-            w_angle=w_angle,
-            w_cl=w_cl,
-        )
-        return loss, stats["angle_loss"], stats["contrastive_loss"]
-
-    raise ValueError("method must be 'baseline' or 'aoe'")
+) -> torch.Tensor:
+    encoded = encoder.encode(texts, device=device, max_length=max_length)
+    if not isinstance(encoded, tuple):
+        raise ValueError("SentenceEncoder must run in complex_mode=True for AoE training")
+    z_re, z_im = encoded
+    return torch.cat([z_re, z_im], dim=1)
 
 
 def train_epoch(
@@ -240,11 +88,10 @@ def train_epoch(
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    method: str,
-    tau_cl: float,
-    tau_angle: float,
-    w_cl: float,
+    angle_tau: float,
+    cl_scale: float,
     w_angle: float,
+    w_cl: float,
     max_length: int,
     epoch_idx: int,
     total_epochs: int,
@@ -254,11 +101,11 @@ def train_epoch(
     scheduler_step: Optional[Callable[[], None]] = None,
 ) -> Tuple[float, float, float, int]:
     encoder.train()
+    grad_accum_steps = max(1, grad_accum_steps)
     angle_total = 0.0
     contrast_total = 0.0
     loss_total = 0.0
     steps = 0
-    grad_accum_steps = max(1, grad_accum_steps)
     optimizer.zero_grad(set_to_none=True)
 
     iterator = dataloader
@@ -266,21 +113,17 @@ def train_epoch(
         desc = f"Epoch {epoch_idx}/{total_epochs}"
         iterator = tqdm(dataloader, desc=desc, leave=False)
 
-    for texts1, texts2, labels in iterator:
+    for texts, scores in iterator:
         steps += 1
-        labels = labels.to(device)
-        loss, angle_val, contrast_val = _forward_step(
-            encoder,
-            texts1,
-            texts2,
-            labels,
-            device,
-            method,
-            tau_cl,
-            tau_angle,
-            w_cl,
-            w_angle,
-            max_length,
+        y_true = scores.to(device)
+        y_pred = _encode_zigzag(encoder, texts, device, max_length)
+        loss, stats = aoe_total_loss(
+            y_true,
+            y_pred,
+            angle_tau=angle_tau,
+            cl_scale=cl_scale,
+            w_angle=w_angle,
+            w_cl=w_cl,
         )
         scaled_loss = loss / grad_accum_steps
         scaled_loss.backward()
@@ -289,26 +132,26 @@ def train_epoch(
             if scheduler_step is not None:
                 scheduler_step()
             optimizer.zero_grad(set_to_none=True)
-        angle_total += angle_val
-        contrast_total += contrast_val
-        loss_total += loss.item()
+        angle_total += stats["angle_loss"]
+        contrast_total += stats["contrastive_loss"]
+        loss_total += stats["total_loss"]
 
         if on_batch_end is not None:
             on_batch_end(
                 {
                     "epoch": epoch_idx,
                     "batch": steps,
-                    "train_angle": angle_val,
-                    "train_contrast": contrast_val,
-                    "train_total": loss.item(),
+                    "train_angle": stats["angle_loss"],
+                    "train_contrast": stats["contrastive_loss"],
+                    "train_total": stats["total_loss"],
                 }
             )
 
         if show_progress and hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
-                loss=f"{loss.item():.4f}",
-                angle=f"{angle_val:.4f}",
-                contrast=f"{contrast_val:.4f}",
+                loss=f"{stats['total_loss']:.4f}",
+                angle=f"{stats['angle_loss']:.4f}",
+                contrast=f"{stats['contrastive_loss']:.4f}",
             )
 
     remainder = steps % grad_accum_steps
@@ -330,11 +173,10 @@ def evaluate_epoch(
     encoder: SentenceEncoder,
     dataloader: DataLoader,
     device: torch.device,
-    method: str,
-    tau_cl: float,
-    tau_angle: float,
-    w_cl: float,
+    angle_tau: float,
+    cl_scale: float,
     w_angle: float,
+    w_cl: float,
     max_length: int,
     show_progress: bool = False,
     on_batch_end: Optional[Callable[[dict], None]] = None,
@@ -349,41 +191,37 @@ def evaluate_epoch(
     if show_progress:
         iterator = tqdm(dataloader, desc="Eval", leave=False)
 
-    for texts1, texts2, labels in iterator:
+    for texts, scores in iterator:
         steps += 1
-        labels = labels.to(device)
-        loss, angle_val, contrast_val = _forward_step(
-            encoder,
-            texts1,
-            texts2,
-            labels,
-            device,
-            method,
-            tau_cl,
-            tau_angle,
-            w_cl,
-            w_angle,
-            max_length,
+        y_true = scores.to(device)
+        y_pred = _encode_zigzag(encoder, texts, device, max_length)
+        loss, stats = aoe_total_loss(
+            y_true,
+            y_pred,
+            angle_tau=angle_tau,
+            cl_scale=cl_scale,
+            w_angle=w_angle,
+            w_cl=w_cl,
         )
-        angle_total += angle_val
-        contrast_total += contrast_val
-        loss_total += loss.item()
+        angle_total += stats["angle_loss"]
+        contrast_total += stats["contrastive_loss"]
+        loss_total += stats["total_loss"]
 
         if on_batch_end is not None:
             on_batch_end(
                 {
                     "batch": steps,
-                    "eval_angle": angle_val,
-                    "eval_contrast": contrast_val,
-                    "eval_total": loss.item(),
+                    "eval_angle": stats["angle_loss"],
+                    "eval_contrast": stats["contrastive_loss"],
+                    "eval_total": stats["total_loss"],
                 }
             )
 
         if show_progress and hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
-                loss=f"{loss.item():.4f}",
-                angle=f"{angle_val:.4f}",
-                contrast=f"{contrast_val:.4f}",
+                loss=f"{stats['total_loss']:.4f}",
+                angle=f"{stats['angle_loss']:.4f}",
+                contrast=f"{stats['contrastive_loss']:.4f}",
             )
 
     if show_progress and hasattr(iterator, "close"):
@@ -419,51 +257,53 @@ def resolve_tensorboard_dir(default_dir: str, override: Optional[str]) -> Option
 
 @dataclass
 class TrainConfig:
-    task: str  # 训练任务标识，例如 "nli"、"stsb" 或 "gis"
-    method: str  # 训练策略，例如 "baseline"（纯对比）或 "aoe"（角度+对比）
-    backbone: str  # 预训练模型名称，例如 "bert-base-uncased"
-    batch_size: int  # 每次迭代的样本批量，例如 256
-    epochs: int  # 训练轮数，例如 3
-    lr: float  # 学习率，例如 2e-5
-    max_length: int  # 输入文本截断长度，例如 128
-    temperature_cl: float  # 对比损失温度系数，例如 0.05
-    temperature_angle: float  # 角度损失温度系数，例如 0.05
-    w_cl: float  # 对比损失权重，例如 1.0
-    w_angle: float  # 角度损失权重，例如 1.0
-    output_dir: str  # 运行结果根目录，例如 "output"
-    run_name: str  # 运行名称，用于区分实验，例如 "bert_nli_aoe"
-    data_cache: Optional[str]  # 数据缓存目录，例如 "data"；可为 None 使用默认值
-    model_cache: Optional[str]  # 模型缓存目录，例如 "models"；可为 None
-    seed: int  # 随机种子，例如 42
-    eval_split: Optional[str]  # 验证集名称，例如 "validation" 或 "none"
-    eval_batch_size: Optional[int]  # 验证批量大小，例如 512；None 表示沿用训练批量
-    metrics_path: Optional[str]  # 自定义指标文件路径，例如 "output/logs/nli.jsonl" 或 "none"
-    tensorboard_dir: Optional[str]  # TensorBoard 目录，例如 "output/tensorboard" 或 "none"
-    no_progress_bar: bool  # 是否禁用 tqdm 进度条，例如 True 表示关闭
-    grad_accum_steps: int  # 梯度累积步数，例如 8 表示 8 个 batch 执行一次 optimizer.step()
-    warmup_steps: int  # 学习率线性 warmup 步数，例如 1000；0 表示关闭
+    dataset: str
+    train_split: str
+    eval_split: Optional[str]
+    backbone: str
+    pooling: str
+    batch_size: int
+    eval_batch_size: Optional[int]
+    epochs: int
+    lr: float
+    max_length: int
+    angle_tau: float
+    cl_scale: float
+    w_angle: float
+    w_cl: float
+    output_dir: str
+    run_name: str
+    data_cache: Optional[str]
+    model_cache: Optional[str]
+    seed: int
+    metrics_path: Optional[str]
+    tensorboard_dir: Optional[str]
+    no_progress_bar: bool
+    grad_accum_steps: int
+    warmup_steps: int
 
     @classmethod
     def from_args(cls, args: object) -> "TrainConfig":
         return cls(
-            task=getattr(args, "task"),
-            method=getattr(args, "method"),
+            dataset=getattr(args, "dataset"),
+            train_split=getattr(args, "train_split", "train"),
+            eval_split=getattr(args, "eval_split", None),
             backbone=getattr(args, "backbone"),
+            pooling=getattr(args, "pooling", "cls"),
             batch_size=getattr(args, "batch_size"),
+            eval_batch_size=getattr(args, "eval_batch_size", None),
             epochs=getattr(args, "epochs"),
             lr=getattr(args, "lr"),
             max_length=getattr(args, "max_length"),
-            temperature_cl=getattr(args, "temperature_cl"),
-            temperature_angle=getattr(args, "temperature_angle"),
-            w_cl=getattr(args, "w_cl"),
+            angle_tau=getattr(args, "angle_tau"),
+            cl_scale=getattr(args, "cl_scale"),
             w_angle=getattr(args, "w_angle"),
+            w_cl=getattr(args, "w_cl"),
             output_dir=getattr(args, "output_dir"),
             run_name=getattr(args, "run_name", "default"),
             data_cache=getattr(args, "data_cache", None),
             model_cache=getattr(args, "model_cache", None),
             seed=getattr(args, "seed", 42),
-            eval_split=getattr(args, "eval_split", None),
-            eval_batch_size=getattr(args, "eval_batch_size", None),
             metrics_path=getattr(args, "metrics_path", None),
             tensorboard_dir=getattr(args, "tensorboard_dir", None),
             no_progress_bar=getattr(args, "no_progress_bar", False),
@@ -488,9 +328,9 @@ class TrainConfig:
 
 
 __all__ = [
-    "TextPairDataset",
+    "AnglePairDataset",
     "set_seed",
-    "build_dataloader",
+    "build_angle_dataloader",
     "train_epoch",
     "evaluate_epoch",
     "resolve_metrics_path",

@@ -1,4 +1,6 @@
-"""Loss functions implementing the AoE angle-based objectives."""
+"""AoE / AnglE loss implementations matching the ACL 2024 reference."""
+
+from __future__ import annotations
 
 from typing import Dict, Tuple
 
@@ -6,133 +8,103 @@ import torch
 import torch.nn.functional as F
 
 
-def supervised_contrastive_loss(
-	embeddings: torch.Tensor,
-	labels: torch.Tensor,
-	temperature: float = 0.05,
-) -> torch.Tensor:
-	"""Compute SimCSE-style supervised contrastive loss.
-
-	Args:
-		embeddings: Real-valued sentence embeddings of shape [batch, dim].
-		labels: Integer labels of shape [batch]; equal labels form positives.
-		temperature: Softmax temperature applied to cosine similarities.
-
-	Returns:
-		Scalar tensor containing the supervised contrastive loss.
-	"""
-
-	if embeddings.dim() != 2:
-		raise ValueError("embeddings must be 2D (batch, dim)")
-
-	if labels.dim() != 1 or labels.size(0) != embeddings.size(0):
-		raise ValueError("labels must be 1D and aligned with embeddings")
-
-	device = embeddings.device
-	batch_size = embeddings.size(0)
-	if batch_size <= 1:
-		return embeddings.new_tensor(0.0)
-
-	normalized = F.normalize(embeddings, p=2, dim=1)
-	similarity = torch.matmul(normalized, normalized.T)
-	logits = similarity / temperature
-
-	eye = torch.eye(batch_size, device=device, dtype=torch.bool)
-	all_mask = ~eye
-	labels_equal = labels.view(-1, 1) == labels.view(1, -1)
-	positive_mask = labels_equal & all_mask
-
-	exp_logits = torch.exp(logits) * all_mask
-	denom = exp_logits.sum(dim=1, keepdim=True) + 1e-12
-	log_prob = logits - torch.log(denom)
-
-	positive_counts = positive_mask.sum(dim=1)
-	loss_per_sample = -(log_prob * positive_mask.float()).sum(dim=1) / (
-		positive_counts.float() + 1e-12
-	)
-
-	valid_mask = positive_counts > 0
-	if valid_mask.sum() == 0:
-		return embeddings.new_tensor(0.0)
-
-	return loss_per_sample[valid_mask].mean()
-
-
-def _pairwise_angle_delta(z_re: torch.Tensor, z_im: torch.Tensor) -> torch.Tensor:
-	"""Return absolute angle difference matrix for all embedding pairs."""
-
-	# Promote to float32 for numerical stability before any matmuls.
-	z_re = z_re.float()
-	z_im = z_im.float()
-	# Complex dot products across all pairs.
-	dot_re = torch.matmul(z_re, z_re.T) + torch.matmul(z_im, z_im.T)
-	dot_im = torch.matmul(z_re, z_im.T) - torch.matmul(z_im, z_re.T)
-	norm = torch.sqrt((z_re.pow(2) + z_im.pow(2)).sum(dim=1).clamp_min(1e-12))
-	denom = torch.outer(norm, norm).clamp_min(1e-12)
-	cos_theta = (dot_re / denom).clamp(-1.0, 1.0)
-	sin_theta = dot_im / denom
-	return torch.atan2(sin_theta, cos_theta).abs()
-
-
 def angle_loss(
-	z_re: torch.Tensor,
-	z_im: torch.Tensor,
-	labels: torch.Tensor,
-	temperature: float = 0.05,
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    tau: float = 20.0,
+    pooling: str = "sum",
 ) -> torch.Tensor:
-	"""Compute AoE angle-ranking loss using all positive/negative pairs."""
+    """Compute the AnglE ranking loss using pairwise ordering."""
+    if y_pred.dim() != 2:
+        raise ValueError("y_pred must be a 2D tensor [batch, feat]")
+    if y_true.dim() not in (1, 2):
+        raise ValueError("y_true must be 1D or 2D")
+    batch_size, feat_dim = y_pred.shape
+    if batch_size % 2 != 0:
+        raise ValueError("Batch size must be even (pairs in zigzag order)")
+    if feat_dim % 2 != 0:
+        raise ValueError("Feature dimension must be even (real + imag)")
+    y_true_flat = y_true.view(batch_size)
+    if y_true_flat.size(0) != batch_size:
+        raise ValueError("y_true must match the batch dimension of y_pred")
 
-	if z_re.shape != z_im.shape:
-		raise ValueError("z_re and z_im must share the same shape")
+    num_pairs = batch_size // 2
+    dim = feat_dim // 2
 
-	batch_size = z_re.size(0)
-	if labels.size(0) != batch_size:
-		raise ValueError("labels must align with embeddings")
+    pair_scores = y_true_flat[0::2].float()
+    order = (pair_scores[:, None] < pair_scores[None, :]).float()
 
-	if batch_size <= 1:
-		return z_re.new_tensor(0.0)
+    real, imag = y_pred[:, :dim], y_pred[:, dim:]
+    a, b = real[0::2], imag[0::2]
+    c, d = real[1::2], imag[1::2]
 
-	device = z_re.device
-	same_label = labels.view(-1, 1) == labels.view(1, -1)
-	eye = torch.eye(batch_size, device=device, dtype=torch.bool)
-	pos_mask = same_label & ~eye
-	neg_mask = ~same_label
+    denom = (c.pow(2) + d.pow(2)).sum(dim=1, keepdim=True).clamp_min(1e-12)
+    re = (a * c + b * d) / denom
+    im = (b * c - a * d) / denom
 
-	if not pos_mask.any() or not neg_mask.any():
-		return z_re.new_tensor(0.0)
+    norm_z = (a.pow(2) + b.pow(2)).sum(dim=1, keepdim=True).sqrt().clamp_min(1e-12)
+    norm_w = (c.pow(2) + d.pow(2)).sum(dim=1, keepdim=True).sqrt().clamp_min(1e-12)
+    ratio = norm_z / norm_w
+    re = re / ratio
+    im = im / ratio
 
-	delta = _pairwise_angle_delta(z_re, z_im)
-	theta_pos = delta.unsqueeze(2)
-	theta_neg = delta.unsqueeze(1)
-	valid = pos_mask.unsqueeze(2) & neg_mask.unsqueeze(1)
-	if not valid.any():
-		return z_re.new_tensor(0.0)
+    complex_vec = torch.cat([re, im], dim=1)
+    if pooling == "sum":
+        pooled = complex_vec.sum(dim=1)
+    elif pooling == "mean":
+        pooled = complex_vec.mean(dim=1)
+    else:
+        raise ValueError("pooling must be either 'sum' or 'mean'")
 
-	diff = (theta_pos - theta_neg) / temperature
-	loss_matrix = F.softplus(diff)
-	loss = (loss_matrix * valid.float()).sum() / valid.float().sum().clamp_min(1.0)
-	return loss
+    scores = pooled.abs() * tau
+    diff = scores[:, None] - scores[None, :]
+    masked_diff = diff - (1.0 - order) * 1e12
+    flat = masked_diff.reshape(-1)
+    flat = torch.cat([flat.new_zeros(1, device=flat.device, dtype=flat.dtype), flat], dim=0)
+    return torch.logsumexp(flat, dim=0).to(torch.float32)
+
+
+def supervised_contrastive_loss(
+    anchors: torch.Tensor,
+    positives: torch.Tensor,
+    scale: float = 20.0,
+) -> torch.Tensor:
+    """InfoNCE-style supervised contrastive loss with anchors matched to positives."""
+    if anchors.shape != positives.shape:
+        raise ValueError("anchors and positives must share the same shape")
+    if anchors.dim() != 2:
+        raise ValueError("inputs must be 2D tensors [batch, dim]")
+
+    batch_size = anchors.size(0)
+    if batch_size <= 1:
+        return anchors.new_tensor(0.0, dtype=torch.float32)
+
+    anchors_norm = F.normalize(anchors, p=2, dim=1)
+    positives_norm = F.normalize(positives, p=2, dim=1)
+    logits = anchors_norm @ positives_norm.T * scale
+    targets = torch.arange(batch_size, device=anchors.device)
+    return F.cross_entropy(logits, targets).to(torch.float32)
 
 
 def aoe_total_loss(
-	z_re: torch.Tensor,
-	z_im: torch.Tensor,
-	labels: torch.Tensor,
-	tau_angle: float = 0.05,
-	tau_cl: float = 0.05,
-	w_angle: float = 1.0,
-	w_cl: float = 1.0,
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    angle_tau: float = 20.0,
+    cl_scale: float = 20.0,
+    w_angle: float = 0.02,
+    w_cl: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-	"""Combine angle ranking and supervised contrastive losses."""
+    """Combine AnglE ranking loss with supervised contrastive loss."""
+    angle_term = angle_loss(y_true, y_pred, tau=angle_tau, pooling="sum")
 
-	z = torch.cat([z_re, z_im], dim=-1)
-	cl_loss = supervised_contrastive_loss(z, labels, tau_cl)
-	ang_loss = angle_loss(z_re, z_im, labels, tau_angle)
-	total = w_angle * ang_loss + w_cl * cl_loss
+    anchors = y_pred[0::2]
+    positives = y_pred[1::2]
+    cl_term = supervised_contrastive_loss(anchors, positives, scale=cl_scale)
 
-	stats = {
-		"angle_loss": float(ang_loss.item()),
-		"contrastive_loss": float(cl_loss.item()),
-		"total_loss": float(total.item()),
-	}
-	return total, stats
+    total = w_angle * angle_term + w_cl * cl_term
+    stats = {
+        "angle_loss": float(angle_term.item()),
+        "contrastive_loss": float(cl_term.item()),
+        "total_loss": float(total.item()),
+    }
+    return total, stats
