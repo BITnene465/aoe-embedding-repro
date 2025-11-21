@@ -5,12 +5,18 @@
 set -euo pipefail
 
 EPOCHS=${EPOCHS:-3}
+NLI_EPOCHS=${NLI_EPOCHS:-1}
 BATCH_SIZE=${BATCH_SIZE:-64}
 OUTPUT_ROOT=${OUTPUT_ROOT:-output}
 DATA_CACHE=${DATA_CACHE:-data}
 MODEL_CACHE=${MODEL_CACHE:-models}
 MAX_LENGTH=${MAX_LENGTH:-128}
 SEED=${SEED:-42}
+GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-8}
+WARMUP_STEPS=${WARMUP_STEPS:-600}
+BASELINE_W_ANGLE=${BASELINE_W_ANGLE:-0.0}
+STS_W_ANGLE=${STS_W_ANGLE:-0.02}
+NLI_W_ANGLE=${NLI_W_ANGLE:-0.02}
 
 RUN_SUFFIX=${RUN_SUFFIX:-$(date +%Y%m%d_%H%M)}
 
@@ -23,30 +29,42 @@ else
 fi
 
 run_train() {
-  local run_name=$1
-  local angle_weight=$2
-  echo "${EMPH}[TRAIN] dataset=stsb w_angle=${angle_weight} run=${run_name}${RESET}"
-  python -m aoe.train \
-    --dataset stsb \
-    --train_split train \
-    --eval_split validation \
-    --run_name "${run_name}" \
-    --output_dir "${OUTPUT_ROOT}" \
-    --epochs "${EPOCHS}" \
-    --batch_size "${BATCH_SIZE}" \
-    --grad_accum_steps 8 \
-    --lr 2e-5 \
-    --warmup_steps 600 \
-    --angle_tau 20 \
-    --cl_scale 20 \
-    --w_angle "${angle_weight}" \
-    --w_cl 1.0 \
-    --max_length "${MAX_LENGTH}" \
-    --data_cache "${DATA_CACHE}" \
-    --model_cache "${MODEL_CACHE}" \
-    --seed "${SEED}" \
-    --tensorboard_dir "${OUTPUT_ROOT}/${run_name}/tensorboard" \
+  local dataset=$1
+  local run_name=$2
+  local angle_weight=$3
+  local train_split=$4
+  local eval_split=$5
+  local epochs=$6
+  shift 6
+  local extra_args=("$@")
+  echo "${EMPH}[TRAIN] dataset=${dataset} w_angle=${angle_weight} run=${run_name}${RESET}"
+  local cmd=(
+    python -m aoe.train
+    --dataset "${dataset}"
+    --train_split "${train_split}"
+    --eval_split "${eval_split}"
+    --run_name "${run_name}"
+    --output_dir "${OUTPUT_ROOT}"
+    --epochs "${epochs}"
+    --batch_size "${BATCH_SIZE}"
+    --grad_accum_steps "${GRAD_ACCUM_STEPS}"
+    --lr 2e-5
+    --warmup_steps "${WARMUP_STEPS}"
+    --angle_tau 20
+    --cl_scale 20
+    --w_angle "${angle_weight}"
+    --w_cl 1.0
+    --max_length "${MAX_LENGTH}"
+    --data_cache "${DATA_CACHE}"
+    --model_cache "${MODEL_CACHE}"
+    --seed "${SEED}"
+    --tensorboard_dir "${OUTPUT_ROOT}/${run_name}/tensorboard"
     --metrics_path "${OUTPUT_ROOT}/${run_name}/metrics.jsonl"
+  )
+  if ((${#extra_args[@]})); then
+    cmd+=("${extra_args[@]}")
+  fi
+  "${cmd[@]}"
 }
 
 run_eval() {
@@ -62,12 +80,15 @@ run_eval() {
 }
 
 # 1. Train contrastive baseline (w_angle=0)
+NLI_RUN="bert_nli_aoe_${RUN_SUFFIX}"
+run_train nli "${NLI_RUN}" "${NLI_W_ANGLE}" train none "${NLI_EPOCHS}"
+
 BASELINE_RUN="bert_stsb_cl_${RUN_SUFFIX}"
-run_train "${BASELINE_RUN}" 0.0
+run_train stsb "${BASELINE_RUN}" "${BASELINE_W_ANGLE}" train validation "${EPOCHS}"
 
 # 2. Train full AoE model (w_angle=0.02)
 AOE_RUN="bert_stsb_aoe_${RUN_SUFFIX}"
-run_train "${AOE_RUN}" 0.02
+run_train stsb "${AOE_RUN}" "${STS_W_ANGLE}" train validation "${EPOCHS}" --init_checkpoint "${OUTPUT_ROOT}/${NLI_RUN}/ckpt"
 
 # 3. Evaluate the AoE checkpoint on STS datasets
 run_eval "${OUTPUT_ROOT}/${AOE_RUN}/ckpt" stsb,gis,sickr

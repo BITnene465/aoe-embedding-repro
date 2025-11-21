@@ -275,6 +275,7 @@ class TrainConfig:
     run_name: str
     data_cache: Optional[str]
     model_cache: Optional[str]
+    init_checkpoint: Optional[str]
     seed: int
     metrics_path: Optional[str]
     tensorboard_dir: Optional[str]
@@ -303,6 +304,7 @@ class TrainConfig:
             run_name=getattr(args, "run_name", "default"),
             data_cache=getattr(args, "data_cache", None),
             model_cache=getattr(args, "model_cache", None),
+            init_checkpoint=getattr(args, "init_checkpoint", None),
             seed=getattr(args, "seed", 42),
             metrics_path=getattr(args, "metrics_path", None),
             tensorboard_dir=getattr(args, "tensorboard_dir", None),

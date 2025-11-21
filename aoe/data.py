@@ -142,6 +142,37 @@ def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
     return splits
 
 
+def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
+    label_scores = {
+        "entailment": 1.0,
+        "neutral": 0.5,
+        "contradiction": 0.0,
+        0: 1.0,
+        1: 0.5,
+        2: 0.0,
+    }
+    pairs: List[Dict[str, object]] = []
+    for example in dataset:
+        premise = example.get("premise")
+        hypothesis = example.get("hypothesis")
+        label = example.get("label")
+        if premise is None or hypothesis is None or label is None:
+            continue
+        score = label_scores.get(label)
+        if score is None:
+            continue
+        pairs.append(
+            {
+                "sentence1": str(premise),
+                "sentence2": str(hypothesis),
+                "score": float(score),
+            }
+        )
+    if not pairs:
+        raise ValueError("NLI split did not yield any valid pairs")
+    return pairs
+
+
 def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
     pairs: List[Dict[str, object]] = []
     for example in dataset:
@@ -169,6 +200,10 @@ def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
 def load_angle_pairs(dataset: str, split: str, cache_dir: Optional[str] = "data") -> List[Dict[str, object]]:
     dataset = (dataset or "").lower()
     split_norm = (split or "").lower()
+
+    if dataset == "nli":
+        raw = load_nli_dataset(split_norm or "train", cache_dir=cache_dir)
+        return _nli_to_angle_pairs(raw)
 
     if dataset == "stsb":
         splits = load_stsb_splits(cache_dir=cache_dir)

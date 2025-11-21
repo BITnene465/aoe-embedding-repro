@@ -52,7 +52,7 @@ def _prepare_run_dirs(base_dir: str, run_name: str) -> dict[str, str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train AoE sentence encoders")
-    parser.add_argument("--dataset", choices=["stsb", "sickr", "gis"], default="stsb")
+    parser.add_argument("--dataset", choices=["nli", "stsb", "sickr", "gis"], default="stsb")
     parser.add_argument("--train_split", default="train")
     parser.add_argument(
         "--eval_split",
@@ -75,6 +75,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model_cache", default="models")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no_progress_bar", action="store_true")
+    parser.add_argument(
+        "--init_checkpoint",
+        default=None,
+        help="Optional checkpoint directory or file to initialize encoder weights",
+    )
     parser.add_argument(
         "--eval_batch_size",
         type=int,
@@ -122,7 +127,18 @@ def main() -> None:
         complex_mode=True,
         pooling=config.pooling,
         cache_dir=config.model_cache,
-    ).to(device)
+    )
+
+    if config.init_checkpoint:
+        ckpt_path = config.init_checkpoint
+        if os.path.isdir(ckpt_path):
+            ckpt_path = os.path.join(ckpt_path, "encoder.pt")
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Init checkpoint '{ckpt_path}' is missing")
+        loaded: SentenceEncoder = torch.load(ckpt_path, map_location="cpu")
+        encoder.load_state_dict(loaded.state_dict())
+
+    encoder = encoder.to(device)
 
     train_loader = build_angle_dataloader(
         dataset=config.dataset,

@@ -32,7 +32,7 @@ def angle_loss(
     dim = feat_dim // 2
 
     pair_scores = y_true_flat[0::2].float()
-    order = (pair_scores[:, None] < pair_scores[None, :]).float()
+    order = (pair_scores[:, None] > pair_scores[None, :]).float()
 
     real, imag = y_pred[:, :dim], y_pred[:, dim:]
     a, b = real[0::2], imag[0::2]
@@ -48,16 +48,19 @@ def angle_loss(
     re = re / ratio
     im = im / ratio
 
-    complex_vec = torch.cat([re, im], dim=1)
+    delta = torch.atan2(im, re).abs()
     if pooling == "sum":
-        pooled = complex_vec.sum(dim=1)
+        pooled = delta.sum(dim=1)
     elif pooling == "mean":
-        pooled = complex_vec.mean(dim=1)
+        pooled = delta.mean(dim=1)
     else:
         raise ValueError("pooling must be either 'sum' or 'mean'")
 
-    scores = pooled.abs() * tau
+    scores = pooled * tau
     diff = scores[:, None] - scores[None, :]
+    if order.sum() == 0:
+        return y_pred.new_tensor(0.0, dtype=torch.float32)
+
     masked_diff = diff - (1.0 - order) * 1e12
     flat = masked_diff.reshape(-1)
     flat = torch.cat([flat.new_zeros(1, device=flat.device, dtype=flat.dtype), flat], dim=0)

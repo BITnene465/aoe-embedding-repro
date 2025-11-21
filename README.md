@@ -54,6 +54,23 @@ python -m aoe.train \
 	--w_cl 1.0
 ```
 
+To pretrain on SNLI+MNLI with the full AnglE loss active, just target the `nli` dataset (the loader automatically merges both corpora and maps labels to continuous scores):
+
+```bash
+python -m aoe.train \
+	--dataset nli \
+	--train_split train \
+	--eval_split none \
+	--run_name bert_nli_aoe \
+	--output_dir output \
+	--epochs 1 \
+	--batch_size 128 \
+	--angle_tau 20 \
+	--cl_scale 20 \
+	--w_angle 0.02 \
+	--w_cl 1.0
+```
+
 Every run writes `output/<run_name>/ckpt/encoder.pt` (full `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
 
 ### Evaluate a checkpoint
@@ -69,7 +86,7 @@ Use `--datasets sts_all` to evaluate STS-B, GIS, and SICK-R in one shot. The eva
 
 ### Helper scripts
 
-`run_all_experiments.sh` orchestrates the full paper workflow: it trains a pure contrastive baseline (`w_angle=0`), trains the AoE model (`w_angle=0.02`), evaluates the AoE checkpoint on STS-B/GIS/SICK-R, and finally runs the cosine saturation analysis from the paper. Feel free to copy the script and adapt hyperparameters or `run_name` values for your own runs.
+`run_all_experiments.sh` now mirrors the two-stage AoE workflow: (1) AoE pretraining on SNLI+MNLI with the angle loss enabled, (2) a contrastive STS-B baseline, (3) STS-B AoE fine-tuning initialized from the NLI checkpoint, (4) STS evaluation (STS-B/GIS/SICK-R), and (5) cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, or `GRAD_ACCUM_STEPS` let you tweak each stage without editing the script.
 
 ```python
 from aoe.model import SentenceEncoder
