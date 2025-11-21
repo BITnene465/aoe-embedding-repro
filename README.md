@@ -15,6 +15,17 @@ Reproduces the AoE (Angle-optimized Embeddings) method from the ACL 2024 paper u
 
 ## Installation
 
+### Conda workflow
+
+```bash
+conda create -n aoe python=3.10 -y
+conda activate aoe
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Virtualenv alternative
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -34,11 +45,13 @@ python -m aoe.train \
 	--run_name bert_nli_aoe \
 	--output_dir output \
 	--epochs 3 \
-	--batch_size 256 \
+	--batch_size 128 \
+	--grad_accum_steps 8 \
+	--warmup_steps 600 \
 	--eval_split validation
 ```
 
-This command creates `output/bert_nli_aoe/ckpt` (weights + config), `metrics.jsonl` (per-epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
+This command creates `output/bert_nli_aoe/ckpt/encoder.pt` (entire `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
 
 ### Evaluate a checkpoint
 
@@ -59,6 +72,7 @@ Common experiment recipes live under `scripts/`. For example:
 bash scripts/train_nli_aoe.sh
 bash scripts/train_nli_baseline.sh
 bash scripts/eval_sts_all.sh
+bash scripts/run_all_experiments.sh  # trains baseline + AoE + STS and runs eval/analysis
 ```
 
 Feel free to copy these scripts and adapt hyperparameters or `run_name` values for your own runs.
@@ -108,3 +122,17 @@ Run `python -m aoe.analysis --mode cosine_saturation --backbone bert-base-uncase
 1. Standard STS evaluation (STS-B, SICK-R, etc.)
 2. In-domain STS (STS-B and GIS)
 3. Cosine saturation analysis on NLI pairs
+
+## Citation
+
+
+```bibtex
+@inproceedings{li2024aoe,
+	title     = {AoE: Angle-Optimized Embeddings for Semantic Textual Similarity},
+	author    = {Li, Xianming and Li, Jing},
+	booktitle = {Proceedings of the 62nd Annual Meeting of the ACL},
+	pages     = {1825--1839},
+	year      = {2024},
+	doi       = {10.18653/v1/2024.acl-long.101}
+}
+```
