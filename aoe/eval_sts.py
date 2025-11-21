@@ -122,8 +122,7 @@ def eval_dataset(
 
 
 def main() -> None:
-	"""CLI entry point for STS-style evaluation using saved checkpoints."""
-
+    """CLI entry point for STS-style evaluation using saved checkpoints."""
     parser = argparse.ArgumentParser(description="Evaluate AoE checkpoints on STS datasets")
     parser.add_argument("--ckpt", required=True, help="Path to checkpoint directory")
     parser.add_argument(
@@ -178,4 +177,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-	main()
+    main()
