@@ -70,3 +70,4 @@ secrets.json
 
 # others
 code_prompts
+*.tmp.*

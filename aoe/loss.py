@@ -58,23 +58,20 @@ def supervised_contrastive_loss(
 	return loss_per_sample[valid_mask].mean()
 
 
-def _angle_distance(
-	z_re_a: torch.Tensor,
-	z_im_a: torch.Tensor,
-	z_re_b: torch.Tensor,
-	z_im_b: torch.Tensor,
-) -> torch.Tensor:
-	"""Return absolute angle difference between two complex vectors."""
+def _pairwise_angle_delta(z_re: torch.Tensor, z_im: torch.Tensor) -> torch.Tensor:
+	"""Return absolute angle difference matrix for all embedding pairs."""
 
-	dot_re = (z_re_a * z_re_b + z_im_a * z_im_b).sum(dim=1)
-	dot_im = (z_re_a * z_im_b - z_im_a * z_re_b).sum(dim=1)
-	norm_a = torch.sqrt((z_re_a.pow(2) + z_im_a.pow(2)).sum(dim=1) + 1e-12)
-	norm_b = torch.sqrt((z_re_b.pow(2) + z_im_b.pow(2)).sum(dim=1) + 1e-12)
-	denom = norm_a * norm_b + 1e-12
+	# Promote to float32 for numerical stability before any matmuls.
+	z_re = z_re.float()
+	z_im = z_im.float()
+	# Complex dot products across all pairs.
+	dot_re = torch.matmul(z_re, z_re.T) + torch.matmul(z_im, z_im.T)
+	dot_im = torch.matmul(z_re, z_im.T) - torch.matmul(z_im, z_re.T)
+	norm = torch.sqrt((z_re.pow(2) + z_im.pow(2)).sum(dim=1).clamp_min(1e-12))
+	denom = torch.outer(norm, norm).clamp_min(1e-12)
 	cos_theta = (dot_re / denom).clamp(-1.0, 1.0)
 	sin_theta = dot_im / denom
-	delta = torch.atan2(sin_theta, cos_theta)
-	return delta.abs()
+	return torch.atan2(sin_theta, cos_theta).abs()
 
 
 def angle_loss(
@@ -83,7 +80,7 @@ def angle_loss(
 	labels: torch.Tensor,
 	temperature: float = 0.05,
 ) -> torch.Tensor:
-	"""Compute simplified AoE angle-ranking loss for complex embeddings."""
+	"""Compute AoE angle-ranking loss using all positive/negative pairs."""
 
 	if z_re.shape != z_im.shape:
 		raise ValueError("z_re and z_im must share the same shape")
@@ -101,31 +98,19 @@ def angle_loss(
 	pos_mask = same_label & ~eye
 	neg_mask = ~same_label
 
-	anchors, positives, negatives = [], [], []
-	for idx in range(batch_size):
-		pos_candidates = torch.nonzero(pos_mask[idx], as_tuple=False).view(-1)
-		neg_candidates = torch.nonzero(neg_mask[idx], as_tuple=False).view(-1)
-		if pos_candidates.numel() == 0 or neg_candidates.numel() == 0:
-			continue
-		anchors.append(idx)
-		positives.append(pos_candidates[0].item())
-		negatives.append(neg_candidates[0].item())
-
-	if not anchors:
+	if not pos_mask.any() or not neg_mask.any():
 		return z_re.new_tensor(0.0)
 
-	anchor_idx = torch.tensor(anchors, device=device, dtype=torch.long)
-	pos_idx = torch.tensor(positives, device=device, dtype=torch.long)
-	neg_idx = torch.tensor(negatives, device=device, dtype=torch.long)
+	delta = _pairwise_angle_delta(z_re, z_im)
+	theta_pos = delta.unsqueeze(2)
+	theta_neg = delta.unsqueeze(1)
+	valid = pos_mask.unsqueeze(2) & neg_mask.unsqueeze(1)
+	if not valid.any():
+		return z_re.new_tensor(0.0)
 
-	theta_pos = _angle_distance(
-		z_re[anchor_idx], z_im[anchor_idx], z_re[pos_idx], z_im[pos_idx]
-	)
-	theta_neg = _angle_distance(
-		z_re[anchor_idx], z_im[anchor_idx], z_re[neg_idx], z_im[neg_idx]
-	)
-
-	loss = F.softplus((theta_pos - theta_neg) / temperature).mean()
+	diff = (theta_pos - theta_neg) / temperature
+	loss_matrix = F.softplus(diff)
+	loss = (loss_matrix * valid.float()).sum() / valid.float().sum().clamp_min(1.0)
 	return loss
 
 
