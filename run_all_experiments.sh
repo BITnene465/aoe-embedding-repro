@@ -4,19 +4,19 @@
 #   EPOCHS=3 BATCH_SIZE=64 OUTPUT_ROOT=output DATA_CACHE=data MODEL_CACHE=models bash run_all_experiments.sh
 set -euo pipefail
 
-EPOCHS=${EPOCHS:-3}
-NLI_EPOCHS=${NLI_EPOCHS:-1}
+EPOCHS=${EPOCHS:-15}
+NLI_EPOCHS=${NLI_EPOCHS:-3}
 BATCH_SIZE=${BATCH_SIZE:-64}
 OUTPUT_ROOT=${OUTPUT_ROOT:-output}
 DATA_CACHE=${DATA_CACHE:-data}
 MODEL_CACHE=${MODEL_CACHE:-models}
 MAX_LENGTH=${MAX_LENGTH:-128}
 SEED=${SEED:-42}
-GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-8}
+GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-4}
 WARMUP_STEPS=${WARMUP_STEPS:-600}
 BASELINE_W_ANGLE=${BASELINE_W_ANGLE:-0.0}
 STS_W_ANGLE=${STS_W_ANGLE:-0.02}
-NLI_W_ANGLE=${NLI_W_ANGLE:-0.02}
+NLI_W_ANGLE=${NLI_W_ANGLE:-0.0}
 
 RUN_SUFFIX=${RUN_SUFFIX:-$(date +%Y%m%d_%H%M)}
 
@@ -95,6 +95,6 @@ run_eval "${OUTPUT_ROOT}/${AOE_RUN}/ckpt" stsb,gis,sickr
 
 # 4. Run cosine saturation analysis (writes to output/plots by default)
 echo "[ANALYSIS] cosine saturation"
-python -m aoe.analysis --mode cosine_saturation --backbone bert-base-uncased --max_samples 50000 --output_dir "${OUTPUT_ROOT}/plots"
+python -m aoe.analysis --mode cosine_saturation --backbone bert-base-uncased --max_samples 50000 --plot_dir "${OUTPUT_ROOT}/plots"
 
 echo "All experiments finished. Logs and checkpoints live under ${OUTPUT_ROOT}."

@@ -54,7 +54,7 @@ python -m aoe.train \
 	--w_cl 1.0
 ```
 
-To pretrain on SNLI+MNLI with the full AnglE loss active, just target the `nli` dataset (the loader automatically merges both corpora and maps labels to continuous scores):
+To pretrain on SNLI+MNLI you can target the `nli` dataset directly (the loader automatically merges both corpora and maps labels to continuous scores). By default we keep `w_angle=0` in this stage so the encoder first converges with contrastive-only supervision; pass `--w_angle 0.02` if you explicitly want the AoE term active during pretraining.
 
 ```bash
 python -m aoe.train \
@@ -79,6 +79,7 @@ Every run writes `output/<run_name>/ckpt/encoder.pt` (full `SentenceEncoder` obj
 python -m aoe.eval_sts \
 	--ckpt output/bert_nli_aoe/ckpt \
 	--datasets stsb,gis \
+	--stsb_split validation \
 	--data_cache data
 ```
 
@@ -86,7 +87,7 @@ Use `--datasets sts_all` to evaluate STS-B, GIS, and SICK-R in one shot. The eva
 
 ### Helper scripts
 
-`run_all_experiments.sh` now mirrors the two-stage AoE workflow: (1) AoE pretraining on SNLI+MNLI with the angle loss enabled, (2) a contrastive STS-B baseline, (3) STS-B AoE fine-tuning initialized from the NLI checkpoint, (4) STS evaluation (STS-B/GIS/SICK-R), and (5) cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, or `GRAD_ACCUM_STEPS` let you tweak each stage without editing the script.
+`run_all_experiments.sh` now mirrors the two-stage AoE workflow: (1) NLI contrastive pretraining (env var `NLI_W_ANGLE` defaults to `0.0`, but you can flip it on), (2) a contrastive STS-B baseline, (3) STS-B AoE fine-tuning initialized from the NLI checkpoint, (4) STS evaluation (STS-B validation/GIS/SICK-R), and (5) cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, or `GRAD_ACCUM_STEPS` let you tweak each stage without editing the script.
 
 ```python
 from aoe.model import SentenceEncoder
@@ -124,7 +125,7 @@ embeddings_re, embeddings_im = complex_encoder.encode(sentences)
 ## Datasets
 
 - **Training**: AoE is trained on STS-style sentence pairs with gold similarity scores. The default workflow uses STS-B train for optimization and STS-B validation for monitoring.
-- **Evaluation**: `aoe.eval_sts` evaluates checkpoints on STS-B test, GIS, and SICK-R, reporting Spearman correlations just like the paper. Additional classic STS sets (STS12-16) can be wired up via `aoe.data.load_angle_pairs` if needed.
+- **Evaluation**: `aoe.eval_sts` evaluates checkpoints on STS-B (validation split by default because the GLUE test labels are hidden), GIS, and SICK-R, reporting Spearman correlations just like the paper. Additional classic STS sets (STS12-16) can be wired up via `aoe.data.load_angle_pairs` if needed.
 
 ## Analysis
 

@@ -48,14 +48,15 @@ def _encode_texts(
     return torch.cat(chunks, dim=0)
 
 
-def _prepare_dataset(dataset_name: str, cache_dir: str | None):
+def _prepare_dataset(dataset_name: str, cache_dir: str | None, stsb_split: str = "validation"):
     """Return sentence pairs and scores for the requested dataset name."""
 
     if dataset_name == "stsb":
         splits = load_stsb_splits(cache_dir=cache_dir)
-        dataset = splits.get("test")
+        split_key = (stsb_split or "validation").lower()
+        dataset = splits.get(split_key)
         if dataset is None:
-            raise ValueError("STS-B test split unavailable")
+            raise ValueError(f"STS-B split '{split_key}' unavailable")
     elif dataset_name == "gis":
         splits = load_gis_splits(cache_dir=cache_dir)
         dataset = splits.get("test") or splits.get("validation") or splits.get("train")
@@ -91,11 +92,16 @@ def eval_dataset(
     device: torch.device,
     max_length: int,
     data_cache: str | None,
+    stsb_split: str = "validation",
 ) -> float:
     """Evaluate a checkpoint on a dataset and return Spearman correlation."""
 
     encoder.eval()
-    sentences1, sentences2, gold_scores = _prepare_dataset(dataset_name, data_cache)
+    sentences1, sentences2, gold_scores = _prepare_dataset(
+        dataset_name,
+        data_cache,
+        stsb_split=stsb_split,
+    )
 
     emb1 = _encode_texts(encoder, sentences1, device=device, max_length=max_length)
     emb2 = _encode_texts(encoder, sentences2, device=device, max_length=max_length)
@@ -122,6 +128,11 @@ def main() -> None:
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--data_cache", default="data")
     parser.add_argument("--model_cache", default="models")
+    parser.add_argument(
+        "--stsb_split",
+        default="validation",
+        help="STS-B split to evaluate (validation by default since test lacks labels)",
+    )
     args = parser.parse_args()
 
     encoder = load_encoder_from_ckpt(args.ckpt, model_cache=args.model_cache)
@@ -147,6 +158,7 @@ def main() -> None:
                 device=device,
                 max_length=args.max_length,
                 data_cache=args.data_cache,
+                stsb_split=args.stsb_split,
             )
         except NotImplementedError:
             print(f"Dataset '{dataset_name}' is not implemented; skipping.")

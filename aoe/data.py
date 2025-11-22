@@ -78,7 +78,12 @@ def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
     """Load the SICK-R dataset (validation split) with normalized field names."""
 
     try:
-        ds = load_dataset("sick", split="validation", cache_dir=cache_dir)
+        ds = load_dataset(
+            "sick",
+            split="validation",
+            cache_dir=cache_dir,
+            trust_remote_code=True,
+        )
     except Exception as exc:  # pragma: no cover - dataset availability guard
         raise NotImplementedError(
             "SICK-R is not available via datasets in this environment."
