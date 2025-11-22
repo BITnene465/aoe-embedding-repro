@@ -52,7 +52,11 @@ def _prepare_run_dirs(base_dir: str, run_name: str) -> dict[str, str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train AoE sentence encoders")
-    parser.add_argument("--dataset", choices=["nli", "stsb", "sickr", "gis"], default="stsb")
+    parser.add_argument(
+        "--dataset",
+        default="stsb",
+        help="Dataset spec (e.g., 'stsb', 'nli', or comma-separated like 'stsb@train,gis@train')",
+    )
     parser.add_argument("--train_split", default="train")
     parser.add_argument(
         "--eval_split",

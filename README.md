@@ -71,6 +71,21 @@ python -m aoe.train \
 	--w_cl 1.0
 ```
 
+During the AoE fine-tune you can now mix multiple STS-style datasets in a single run by chaining them with commas (or `+`) and optionally overriding each split via `dataset@split`:
+
+```bash
+python -m aoe.train \
+	--dataset stsb@train,gis@train,sickr@validation \
+	--train_split train \
+	--eval_split validation \
+	--run_name bert_sts_mix_aoe \
+	--output_dir output \
+	--epochs 3 \
+	--batch_size 64 \
+	--w_angle 0.02 \
+	--w_cl 1.0
+```
+
 Every run writes `output/<run_name>/ckpt/encoder.pt` (full `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
 
 ### Evaluate a checkpoint
@@ -87,7 +102,7 @@ Use `--datasets sts_all` to evaluate STS-B, GIS, and SICK-R in one shot. The eva
 
 ### Helper scripts
 
-`run_all_experiments.sh` now mirrors the two-stage AoE workflow: (1) NLI contrastive pretraining (env var `NLI_W_ANGLE` defaults to `0.0`, but you can flip it on), (2) a contrastive STS-B baseline, (3) STS-B AoE fine-tuning initialized from the NLI checkpoint, (4) STS evaluation (STS-B validation/GIS/SICK-R), and (5) cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, or `GRAD_ACCUM_STEPS` let you tweak each stage without editing the script.
+`scripts/train_pretrain_nli.sh` handles the NLI contrastive pretraining stage (Stage 1). `scripts/finetune_aoe_mixed.sh` consumes a pretrained checkpoint (set `INIT_CHECKPOINT=/path/to/ckpt`) and runs the AoE mixed-dataset fine-tune (Stage 2). If you still want a one-shot pipeline, `run_all_experiments.sh` now simply chains these two stages (with `SKIP_NLI=true` to reuse an existing checkpoint), evaluates on STS-B/GIS/SICK-R, and finishes with the cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, `AOE_DATASETS`, `GRAD_ACCUM_STEPS`, or `INIT_CHECKPOINT` let you tweak the flow without editing the scripts.
 
 ```python
 from aoe.model import SentenceEncoder
@@ -124,7 +139,7 @@ embeddings_re, embeddings_im = complex_encoder.encode(sentences)
 
 ## Datasets
 
-- **Training**: AoE is trained on STS-style sentence pairs with gold similarity scores. The default workflow uses STS-B train for optimization and STS-B validation for monitoring.
+- **Training**: AoE is trained on STS-style sentence pairs with gold similarity scores. You can pass comma/plus-separated dataset specs (e.g., `stsb@train,gis@train,sickr@validation`) to mix corpora in one run; `dataset@split` overrides the global `--train_split` for that token.
 - **Evaluation**: `aoe.eval_sts` evaluates checkpoints on STS-B (validation split by default because the GLUE test labels are hidden), GIS, and SICK-R, reporting Spearman correlations just like the paper. Additional classic STS sets (STS12-16) can be wired up via `aoe.data.load_angle_pairs` if needed.
 
 ## Analysis

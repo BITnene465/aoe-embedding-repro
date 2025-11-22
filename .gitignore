@@ -29,12 +29,12 @@ env*/
 # Jupyter
 .ipynb_checkpoints/
 
-# 数据、模型与中间产物（通常不纳入版本库）
+# 数据、模型与中间产物
 data/*
 datasets/*
 models/*
 checkpoints/*
-outputs/ckpt/*
+output
 *.ckpt
 *.pt
 *.pth
@@ -52,7 +52,7 @@ wandb/
 .mypy_cache/
 .pytest_cache/
 
-# Hugging Face / 其他缓存（可按需调整）
+# Hugging Face
 .huggingface/
 transformers_cache/
 datasets_cache/

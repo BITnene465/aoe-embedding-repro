@@ -1,5 +1,6 @@
 """Data loading and preprocessing utilities for AoE experiments."""
 
+import random
 from typing import Dict, List, Optional
 
 from datasets import Dataset, concatenate_datasets, load_dataset
@@ -203,28 +204,60 @@ def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
 
 
 def load_angle_pairs(dataset: str, split: str, cache_dir: Optional[str] = "data") -> List[Dict[str, object]]:
-    dataset = (dataset or "").lower()
+    dataset_raw = (dataset or "").strip()
+    split_norm = (split or "").lower()
+    if not dataset_raw:
+        raise ValueError("Dataset name must be provided")
+
+    tokens = [part.strip() for part in dataset_raw.replace("+", ",").split(",") if part.strip()]
+    if not tokens:
+        raise ValueError("Dataset string did not contain any valid entries")
+
+    if len(tokens) > 1:
+        merged: List[Dict[str, object]] = []
+        for token in tokens:
+            name, custom_split = _parse_dataset_token(token)
+            use_split = custom_split or split_norm or "train"
+            merged.extend(_load_single_dataset(name, use_split, cache_dir))
+        if not merged:
+            raise ValueError("Combined dataset spec produced no valid angle pairs")
+        random.shuffle(merged)
+        return merged
+
+    name, custom_split = _parse_dataset_token(tokens[0])
+    use_split = custom_split or split_norm or "train"
+    return _load_single_dataset(name, use_split, cache_dir)
+
+
+def _parse_dataset_token(token: str) -> tuple[str, Optional[str]]:
+    if "@" not in token:
+        return token.lower(), None
+    name, split = token.split("@", 1)
+    return name.lower(), (split or "").lower() or None
+
+
+def _load_single_dataset(name: str, split: str, cache_dir: Optional[str]) -> List[Dict[str, object]]:
     split_norm = (split or "").lower()
 
-    if dataset == "nli":
+    if name == "nli":
         raw = load_nli_dataset(split_norm or "train", cache_dir=cache_dir)
         return _nli_to_angle_pairs(raw)
 
-    if dataset == "stsb":
+    if name == "stsb":
         splits = load_stsb_splits(cache_dir=cache_dir)
         if split_norm not in splits:
             raise ValueError(f"STS-B split '{split}' is unavailable")
         return _dataset_to_angle_pairs(splits[split_norm])
 
-    if dataset == "gis":
+    if name == "gis":
         splits = load_gis_splits(cache_dir=cache_dir)
         if split_norm not in splits:
             raise ValueError(f"GIS split '{split}' is unavailable")
         return _dataset_to_angle_pairs(splits[split_norm])
 
-    if dataset == "sickr":
+    if name == "sickr":
         if split_norm not in {"validation", "val", "dev", "test"}:
             raise ValueError("SICK-R exposes only the validation split for scored data")
         return _dataset_to_angle_pairs(load_sickr_split(cache_dir=cache_dir))
 
-    raise ValueError(f"Unknown dataset '{dataset}' for AoE angle training")
+    raise ValueError(f"Unknown dataset '{name}' for AoE angle training")
