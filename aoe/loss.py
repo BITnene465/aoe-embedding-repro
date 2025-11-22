@@ -34,29 +34,34 @@ def angle_loss(
     pair_scores = y_true_flat[0::2].float()
     order = (pair_scores[:, None] > pair_scores[None, :]).float()
 
-    real, imag = y_pred[:, :dim], y_pred[:, dim:]
-    a, b = real[0::2], imag[0::2]
-    c, d = real[1::2], imag[1::2]
+    y_pred_re, y_pred_im = y_pred[:, :dim], y_pred[:, dim:]
+    a = y_pred_re[0::2]
+    b = y_pred_im[0::2]
+    c = y_pred_re[1::2]
+    d = y_pred_im[1::2]
 
-    denom = (c.pow(2) + d.pow(2)).sum(dim=1, keepdim=True).clamp_min(1e-12)
-    re = (a * c + b * d) / denom
-    im = (b * c - a * d) / denom
+    # Complex division: (a+bi) / (c+di) = ((ac+bd) + i(bc-ad)) / (c^2+d^2)
+    z = torch.sum(c**2 + d**2, dim=1, keepdim=True)
+    re = (a * c + b * d) / z
+    im = (b * c - a * d) / z
 
-    norm_z = (a.pow(2) + b.pow(2)).sum(dim=1, keepdim=True).sqrt().clamp_min(1e-12)
-    norm_w = (c.pow(2) + d.pow(2)).sum(dim=1, keepdim=True).sqrt().clamp_min(1e-12)
-    ratio = norm_z / norm_w
-    re = re / ratio
-    im = im / ratio
+    # Normalize by magnitude ratio
+    dz = torch.sum(a**2 + b**2, dim=1, keepdim=True)**0.5
+    dw = torch.sum(c**2 + d**2, dim=1, keepdim=True)**0.5
+    re /= (dz / dw)
+    im /= (dz / dw)
 
-    delta = torch.atan2(im, re).abs()
+    # Concatenate re and im, then pool
+    y_pred_angle = torch.cat((re, im), dim=1)
     if pooling == "sum":
-        pooled = delta.sum(dim=1)
+        pooled = torch.sum(y_pred_angle, dim=1)
     elif pooling == "mean":
-        pooled = delta.mean(dim=1)
+        pooled = torch.mean(y_pred_angle, dim=1)
     else:
         raise ValueError("pooling must be either 'sum' or 'mean'")
 
-    scores = pooled * tau
+    # Apply absolute value and scale
+    scores = torch.abs(pooled) * tau
     diff = scores[:, None] - scores[None, :]
     if order.sum() == 0:
         return y_pred.new_tensor(0.0, dtype=torch.float32)

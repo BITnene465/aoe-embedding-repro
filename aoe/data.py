@@ -61,7 +61,7 @@ def load_nli_dataset(split: str = "train", cache_dir: Optional[str] = "data") ->
 
 
 def load_stsb_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
-    """Return STS-B splits with fields (sentence1, sentence2, score)."""
+    """Return STS-B splits with fields (text1, text2, score)."""
 
     ds_dict = load_dataset("glue", "stsb", cache_dir=cache_dir)
     splits: Dict[str, Dataset] = {}
@@ -91,8 +91,8 @@ def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
         ) from exc
 
     rename_map = {
-        "sentence_A": "sentence1",
-        "sentence_B": "sentence2",
+        "sentence_A": "text1",
+        "sentence_B": "text2",
         "relatedness_score": "score",
     }
     for src, tgt in rename_map.items():
@@ -134,8 +134,8 @@ def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
             except (TypeError, ValueError):
                 label = 0.0
         return {
-            "sentence1": text1,
-            "sentence2": text2,
+            "text1": text1,
+            "text2": text2,
             "score": label,
         }
 
@@ -149,13 +149,13 @@ def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
 
 
 def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
+    # 官方配置：排除neutral，只保留 entailment(1) 和 contradiction(0) 二分类
     label_scores = {
         "entailment": 1.0,
-        "neutral": 0.5,
         "contradiction": 0.0,
-        0: 1.0,
-        1: 0.5,
-        2: 0.0,
+        0: 1.0,  # entailment numeric
+        2: 0.0,  # contradiction numeric
+        # neutral (1) is excluded
     }
     pairs: List[Dict[str, object]] = []
     for example in dataset:
@@ -164,13 +164,16 @@ def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
         label = example.get("label")
         if premise is None or hypothesis is None or label is None:
             continue
+        # 官方做法：跳过 neutral 样本
+        if label == "neutral" or label == 1:
+            continue
         score = label_scores.get(label)
         if score is None:
             continue
         pairs.append(
             {
-                "sentence1": str(premise),
-                "sentence2": str(hypothesis),
+                "text1": str(premise),
+                "text2": str(hypothesis),
                 "score": float(score),
             }
         )
@@ -182,9 +185,10 @@ def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
 def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
     pairs: List[Dict[str, object]] = []
     for example in dataset:
-        sent1 = example.get("sentence1")
-        sent2 = example.get("sentence2")
-        score = example.get("score")
+        # 尝试从多个可能的字段名中获取数据（兼容不同数据源）
+        sent1 = example.get("text1") or example.get("sentence1")
+        sent2 = example.get("text2") or example.get("sentence2")
+        score = example.get("score") or example.get("label")
         if sent1 is None or sent2 is None or score is None:
             continue
         try:
@@ -193,8 +197,8 @@ def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
             continue
         pairs.append(
             {
-                "sentence1": str(sent1),
-                "sentence2": str(sent2),
+                "text1": str(sent1),
+                "text2": str(sent2),
                 "score": score_val,
             }
         )

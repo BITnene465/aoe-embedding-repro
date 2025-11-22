@@ -69,8 +69,8 @@ def _prepare_dataset(dataset_name: str, cache_dir: str | None, stsb_split: str =
 
     s1, s2, scores = [], [], []
     for example in dataset:
-        sent1 = example.get("sentence1")
-        sent2 = example.get("sentence2")
+        sent1 = example.get("text1")
+        sent2 = example.get("text2")
         score = example.get("score")
         if sent1 is None or sent2 is None or score is None:
             continue

@@ -37,8 +37,8 @@ def _angle_collate(batch: Sequence[Dict[str, object]]) -> Tuple[List[str], torch
     texts: List[str] = []
     scores: List[float] = []
     for example in batch:
-        sent1 = str(example["sentence1"])
-        sent2 = str(example["sentence2"])
+        sent1 = str(example["text1"])
+        sent2 = str(example["text2"])
         score = float(example["score"])
         texts.extend([sent1, sent2])
         scores.extend([score, score])

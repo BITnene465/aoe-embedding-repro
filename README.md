@@ -32,77 +32,83 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Usage
+## Quick Start
 
-### Train an encoder
+### Stage 1: NLI Pretraining
 
-The training CLI follows the exact AnglE setup: every batch contains zigzag sentence pairs from an STS dataset, complex embeddings are produced in `SentenceEncoder`, and the AoE loss combines the CoSENT ranking angle with an InfoNCE contrastive term.
+```bash
+bash scripts/train_pretrain_nli.sh
+```
+
+Official configuration:
+- Binary classification: **excludes neutral samples** (entailment vs contradiction only)
+- `batch_size=32`, `grad_accum=16` (effective batch: 512)
+- `epochs=1`, `warmup_steps=100`, `lr=2e-5`
+- `w_angle=1.0`, `w_cl=30.0` (angle + strong contrastive)
+
+### Stage 2: STS Mixed Fine-tuning
+
+```bash
+INIT_CHECKPOINT=output/bert_nli_aoe_<timestamp>/ckpt bash scripts/finetune_aoe_mixed.sh
+```
+
+Fine-tune on STS-B + GIS + SICK-R:
+- `batch_size=32`, `grad_accum=16`, `epochs=5`
+- `w_angle=0.02`, `w_cl=1.0` (reduced angle weight)
+- Default datasets: `stsb@train,gis@train,sickr@validation`
+
+### Evaluation
+
+```bash
+CKPT=output/bert_stsb_aoe_<timestamp>/ckpt bash scripts/eval_sts_all.sh
+```
+
+Reports Spearman correlations on **7 official STS datasets** (STS12-16, STS-B, SICK-R) following the AnglE paper's evaluation protocol.
+
+## Advanced Usage
+
+### Custom Training
 
 ```bash
 python -m aoe.train \
-	--dataset stsb \
+	--dataset stsb@train,gis@train \
 	--train_split train \
 	--eval_split validation \
-	--run_name bert_stsb_aoe \
+	--run_name my_experiment \
 	--output_dir output \
-	--epochs 3 \
-	--batch_size 64 \
-	--grad_accum_steps 8 \
+	--epochs 5 \
+	--batch_size 32 \
+	--grad_accum_steps 16 \
+	--lr 2e-5 \
+	--warmup_steps 100 \
 	--angle_tau 20 \
 	--cl_scale 20 \
 	--w_angle 0.02 \
 	--w_cl 1.0
 ```
 
-To pretrain on SNLI+MNLI you can target the `nli` dataset directly (the loader automatically merges both corpora and maps labels to continuous scores). By default we keep `w_angle=0` in this stage so the encoder first converges with contrastive-only supervision; pass `--w_angle 0.02` if you explicitly want the AoE term active during pretraining.
+### Environment Variables
 
+**NLI Training** (`train_pretrain_nli.sh`):
+- `NLI_EPOCHS` (default: 1)
+- `BATCH_SIZE` (default: 32)
+- `GRAD_ACCUM_STEPS` (default: 16)
+- `NLI_W_ANGLE` (default: 1.0)
+- `WARMUP_STEPS` (default: 100)
+
+**STS Fine-tuning** (`finetune_aoe_mixed.sh`):
+- `EPOCHS` (default: 5)
+- `STS_W_ANGLE` (default: 0.02)
+- `AOE_DATASETS` (default: `stsb@train,gis@train,sickr@validation`)
+- `INIT_CHECKPOINT` (required: path to NLI checkpoint)
+
+Example:
 ```bash
-python -m aoe.train \
-	--dataset nli \
-	--train_split train \
-	--eval_split none \
-	--run_name bert_nli_aoe \
-	--output_dir output \
-	--epochs 1 \
-	--batch_size 128 \
-	--angle_tau 20 \
-	--cl_scale 20 \
-	--w_angle 0.02 \
-	--w_cl 1.0
+NLI_EPOCHS=2 NLI_W_ANGLE=0.5 bash scripts/train_pretrain_nli.sh
+EPOCHS=10 STS_W_ANGLE=0.01 INIT_CHECKPOINT=output/bert_nli_aoe_exp3/ckpt bash scripts/finetune_aoe_mixed.sh
 ```
 
-During the AoE fine-tune you can now mix multiple STS-style datasets in a single run by chaining them with commas (or `+`) and optionally overriding each split via `dataset@split`:
-
-```bash
-python -m aoe.train \
-	--dataset stsb@train,gis@train,sickr@validation \
-	--train_split train \
-	--eval_split validation \
-	--run_name bert_sts_mix_aoe \
-	--output_dir output \
-	--epochs 3 \
-	--batch_size 64 \
-	--w_angle 0.02 \
-	--w_cl 1.0
-```
-
-Every run writes `output/<run_name>/ckpt/encoder.pt` (full `SentenceEncoder` object), `metrics.jsonl` (per-batch/epoch loss snapshots), and `tensorboard/` event files unless you pass `--metrics_path none` or `--tensorboard_dir none`.
-
-### Evaluate a checkpoint
-
-```bash
-python -m aoe.eval_sts \
-	--ckpt output/bert_nli_aoe/ckpt \
-	--datasets stsb,gis \
-	--stsb_split validation \
-	--data_cache data
-```
-
-Use `--datasets sts_all` to evaluate STS-B, GIS, and SICK-R in one shot. The evaluation command automatically reloads the model config stored inside the checkpoint directory.
-
-### Helper scripts
-
-`scripts/train_pretrain_nli.sh` handles the NLI contrastive pretraining stage (Stage 1). `scripts/finetune_aoe_mixed.sh` consumes a pretrained checkpoint (set `INIT_CHECKPOINT=/path/to/ckpt`) and runs the AoE mixed-dataset fine-tune (Stage 2). If you still want a one-shot pipeline, `run_all_experiments.sh` now simply chains these two stages (with `SKIP_NLI=true` to reuse an existing checkpoint), evaluates on STS-B/GIS/SICK-R, and finishes with the cosine saturation analysis. Environment variables such as `NLI_EPOCHS`, `NLI_W_ANGLE`, `STS_W_ANGLE`, `AOE_DATASETS`, `GRAD_ACCUM_STEPS`, or `INIT_CHECKPOINT` let you tweak the flow without editing the scripts.
+### Python API
 
 ```python
 from aoe.model import SentenceEncoder
@@ -121,39 +127,133 @@ complex_encoder = SentenceEncoder(complex_mode=True)
 embeddings_re, embeddings_im = complex_encoder.encode(sentences)
 ```
 
+### Output Artifacts
+
+Each run writes to `output/<run_name>/`:
+- `ckpt/encoder.pt` - Full `SentenceEncoder` object
+- `metrics.jsonl` - Per-batch/epoch loss snapshots
+- `tensorboard/` - TensorBoard event files
+- `train_config.json` - Complete training configuration
+
+Browse training curves:
+```bash
+tensorboard --logdir output --port 6006
+```
+
 ## Implementation Details
 
-- **Loss**: The new `aoe.loss` module matches the official AnglE engineering. `angle_loss` implements the complex division / pooling pipeline from the paper and performs CoSENT-style pair-of-pairs ranking with `tau=20`. `supervised_contrastive_loss` mirrors Eq.(4) (InfoNCE with aligned anchors/positives). `aoe_total_loss` combines the two with weights `w_angle=0.02`, `w_cl=1.0`.
-- **Data pipeline**: `aoe.train_utils` now builds zigzag batches straight from STS-style datasets (currently STS-B, GIS, SICK-R). Each batch looks like `[s0_1, s0_2, s1_1, s1_2, ...]`, and the matching scores are injected into `y_true` so the loss can build the order matrix.
-- **Encoder**: `SentenceEncoder` always runs in `complex_mode=True` for AoE training. The real and imaginary parts are concatenated after encoding so the loss sees `[2 * dim]` features per text as required by AnglE.
-- **Logging/checkpointing**: Every run records the full `TrainConfig`, metrics JSONL, and TensorBoard summaries. Checkpoints store the entire encoder object for direct `torch.load` usage.
+### Loss Functions
 
-## Cache & Output Layout
+Fully aligned with official AnglE implementation:
 
-- Hugging Face datasets default to `data/` (override with `--data_cache`).
-- Hugging Face model weights default to `models/` (override with `--model_cache`).
-- Each training run writes to `output/<run_name>/` by default. Inside you will find `ckpt/` (weights + encoder config), `tensorboard/`, `metrics.jsonl`, and the serialized `train_config.json` that mirrors the CLI arguments.
-- Pass `--metrics_path none` or `--tensorboard_dir none` to disable the corresponding artifacts or point them elsewhere.
-- Analysis artifacts (plots) still default to `output/plot/` (override with `--plot_dir`).
-- Run `tensorboard --logdir output --port 6006` to browse every run directory.
+- **`angle_loss`**: Complex division → pooling → abs → CoSENT pair-ranking (tau=20)
+- **`supervised_contrastive_loss`**: InfoNCE with aligned anchor/positive pairs (scale=20)
+- **Hyperparameters**:
+  - **NLI stage**: `w_angle=1.0`, `w_cl=30.0` (strong contrastive supervision)
+  - **STS stage**: `w_angle=0.02`, `w_cl=1.0` (angle loss becomes dominant)
+
+### Data Pipeline
+
+**NLI (SNLI + MultiNLI)**:
+- Binary classification (excludes neutral samples, matching official repo)
+- `entailment` → score 1.0
+- `contradiction` → score 0.0
+- `neutral` → **excluded** (official configuration)
+- ~550k training pairs after filtering
+
+**STS Datasets**:
+- Zigzag batch construction: `[s0_1, s0_2, s1_1, s1_2, ...]`
+- Gold similarity scores injected for ranking loss
+- Dataset mixing: `stsb@train,gis@train,sickr@validation`
+
+### Encoder Architecture
+
+`SentenceEncoder` operates in `complex_mode=True` during training:
+- Splits hidden dimension: `[real_part, imaginary_part]`
+- Outputs concatenated features `[2 * dim]` for angle loss
+- Pooling: configurable (`cls` or `mean`)
+
+### Training Configuration
+
+Official AnglE defaults:
+- Batch size: **32** (single GPU)
+- Gradient accumulation: **16** (effective batch: 512)
+- Learning rate: **2e-5** (both stages)
+- Warmup steps: **100**
+- NLI epochs: **1**
+- STS epochs: **5**
 
 ## Datasets
 
-- **Training**: AoE is trained on STS-style sentence pairs with gold similarity scores. You can pass comma/plus-separated dataset specs (e.g., `stsb@train,gis@train,sickr@validation`) to mix corpora in one run; `dataset@split` overrides the global `--train_split` for that token.
-- **Evaluation**: `aoe.eval_sts` evaluates checkpoints on STS-B (validation split by default because the GLUE test labels are hidden), GIS, and SICK-R, reporting Spearman correlations just like the paper. Additional classic STS sets (STS12-16) can be wired up via `aoe.data.load_angle_pairs` if needed.
+### NLI (SNLI + MultiNLI)
+- Used for Stage 1 pretraining
+- Binary classification: `entailment` (1.0) vs `contradiction` (0.0)
+- **Neutral samples excluded** (official configuration)
+- ~550k training pairs after filtering
 
-## Analysis
+### STS Evaluation (Official AnglE Benchmark)
+Official evaluation uses 7 STS datasets following SentEval protocol:
+- **STS12** (5 sub-tasks): MSRpar, MSRvid, SMTeuroparl, OnWN, SMTnews
+- **STS13** (3 sub-tasks): FNWN, headlines, OnWN
+- **STS14** (6 sub-tasks): deft-forum, deft-news, headlines, images, OnWN, tweet-news
+- **STS15** (5 sub-tasks): answers-forums, answers-students, belief, headlines, images
+- **STS16** (5 sub-tasks): answer-answer, headlines, plagiarism, postediting, question-question
+- **STS-B** (STSBenchmark): 5.7k train, 1.5k dev, 1.4k test pairs (scores 0-5)
+- **SICK-R** (SICKRelatedness): 4.5k train, 0.5k dev, 4.9k test pairs (scores 1-5)
 
-Run `python -m aoe.analysis --mode cosine_saturation --backbone bert-base-uncased --max_samples 50000` to inspect the cosine similarity distribution of sampled NLI pairs and reproduce the high-cosine saturation phenomenon described in the AoE paper. The script logs saturation percentages and saves a histogram (`cosine_hist.png`).
+### STS Training Datasets
+- **STS-B** (GLUE): 5.7k train, 1.5k validation pairs (scores 0-5, normalized to 0-1)
+- **GIS** (GitHub Issue Similarity): ~28k pairs with binary similarity labels
+- **SICK-R**: Relatedness scores from SICK validation split
 
-## Planned Experiments
+### Dataset Mixing
 
-1. Standard STS evaluation (STS-B, SICK-R, etc.)
-2. In-domain STS (STS-B and GIS)
-3. Cosine saturation analysis on NLI pairs
+Combine multiple sources via comma-separated specs:
+```bash
+--dataset stsb@train,gis@train,sickr@validation
+```
+
+The `@split` suffix overrides the global `--train_split` for specific datasets.
+
+## Cache & Output Layout
+
+- **Datasets**: `data/` (override with `--data_cache`)
+- **Models**: `models/` (override with `--model_cache`)
+- **Outputs**: `output/<run_name>/`
+  - `ckpt/` - Weights + encoder config
+  - `tensorboard/` - Training curves
+  - `metrics.jsonl` - Per-batch metrics
+  - `train_config.json` - CLI arguments
+
+## Experiments
+
+Based on official AnglE configuration:
+
+### exp1 (Baseline)
+NLI pretraining only → evaluate on STS-B
+- Expected: Poor performance (~0.50 Spearman) due to cosine saturation
+
+### exp2 (Previous Attempt)
+Mixed configuration with incorrect hyperparameters
+- Issues identified: wrong loss weights, included neutral samples, incorrect batch size
+
+### exp3 (Official Config)
+Two-stage training with corrected parameters:
+- Stage 1: NLI with `w_angle=1.0, w_cl=30.0`, binary classification
+- Stage 2: STS mix with `w_angle=0.02, w_cl=1.0`
+- **Target**: Match official AnglE performance across all 7 STS benchmarks
+  - Expected average: ~85% Spearman (STS12-16 + STS-B + SICK-R)
+  - Individual targets: STS-B ~88%, SICK-R ~81%
+
+### Analysis
+Cosine saturation phenomenon on NLI pairs:
+```bash
+python -m aoe.analysis --mode cosine_saturation --backbone bert-base-uncased --max_samples 50000
+```
+- Measure high-cosine percentage (expected: >90% above 0.8)
+- Visualize distribution shift after angle optimization
 
 ## Citation
-
 
 ```bibtex
 @inproceedings{li2024aoe,

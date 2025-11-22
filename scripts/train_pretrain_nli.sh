@@ -2,16 +2,16 @@
 # Pretrain AoE encoder on SNLI+MNLI with contrastive loss only.
 set -euo pipefail
 
-NLI_EPOCHS=${NLI_EPOCHS:-3}
-BATCH_SIZE=${BATCH_SIZE:-64}
+NLI_EPOCHS=${NLI_EPOCHS:-1}
+BATCH_SIZE=${BATCH_SIZE:-256}
 OUTPUT_ROOT=${OUTPUT_ROOT:-output}
 DATA_CACHE=${DATA_CACHE:-data}
 MODEL_CACHE=${MODEL_CACHE:-models}
 MAX_LENGTH=${MAX_LENGTH:-128}
 SEED=${SEED:-42}
-GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-4}
-WARMUP_STEPS=${WARMUP_STEPS:-600}
-NLI_W_ANGLE=${NLI_W_ANGLE:-0.0}
+GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-2}
+WARMUP_STEPS=${WARMUP_STEPS:-100}
+NLI_W_ANGLE=${NLI_W_ANGLE:-1.0}
 RUN_SUFFIX=${RUN_SUFFIX:-$(date +%Y%m%d_%H%M)}
 RUN_NAME=${RUN_NAME:-bert_nli_aoe_${RUN_SUFFIX}}
 
@@ -29,7 +29,7 @@ python -m aoe.train \
   --angle_tau 20 \
   --cl_scale 20 \
   --w_angle "${NLI_W_ANGLE}" \
-  --w_cl 1.0 \
+  --w_cl 30.0 \
   --max_length "${MAX_LENGTH}" \
   --data_cache "${DATA_CACHE}" \
   --model_cache "${MODEL_CACHE}" \
