@@ -27,7 +27,11 @@ if [[ ! -d "${INIT_CHECKPOINT}" ]]; then
   exit 1
 fi
 
-python -m aoe.train \
+fi
+
+LAUNCHER=${LAUNCHER:-python}
+
+$LAUNCHER -m aoe.train \
   --dataset "${AOE_DATASETS}" \
   --train_split train \
   --eval_split validation \

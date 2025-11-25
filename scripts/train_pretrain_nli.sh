@@ -15,8 +15,9 @@ WARMUP_STEPS=${WARMUP_STEPS:-100}
 NLI_W_ANGLE=${NLI_W_ANGLE:-1.0}
 RUN_SUFFIX=${RUN_SUFFIX:-$(date +%Y%m%d_%H%M)}
 RUN_NAME=${RUN_NAME:-bert_nli_aoe_${RUN_SUFFIX}}
+LAUNCHER=${LAUNCHER:-python}
 
-python -m aoe.train \
+$LAUNCHER -m aoe.train \
   --dataset nli \
   --train_split train \
   --eval_split none \
