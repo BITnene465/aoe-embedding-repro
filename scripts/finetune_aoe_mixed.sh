@@ -2,7 +2,8 @@
 # Fine-tune AoE on mixed STS datasets with angle loss enabled.
 set -euo pipefail
 
-EPOCHS=${EPOCHS:-5}
+LEARNING_RATE=${LEARNING_RATE:-2e-5}
+EPOCHS=${EPOCHS:-10}
 BATCH_SIZE=${BATCH_SIZE:-256}
 OUTPUT_ROOT=${OUTPUT_ROOT:-output}
 DATA_CACHE=${DATA_CACHE:-data}
@@ -35,7 +36,7 @@ python -m aoe.train \
   --epochs "${EPOCHS}" \
   --batch_size "${BATCH_SIZE}" \
   --grad_accum_steps "${GRAD_ACCUM_STEPS}" \
-  --lr 2e-5 \
+  --lr "${LEARNING_RATE}" \
   --warmup_steps "${WARMUP_STEPS}" \
   --angle_tau 20 \
   --cl_scale 20 \

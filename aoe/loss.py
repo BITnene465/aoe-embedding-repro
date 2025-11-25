@@ -8,45 +8,6 @@ import torch
 import torch.nn.functional as F
 
 
-
-def cosine_loss(y_true: torch.Tensor, y_pred: torch.Tensor, tau: float = 20.0) -> torch.Tensor:
-    """Compute cosine loss matching official AnglE."""
-    # y_true is zigzag [batch_size], e.g. [1, 1, 0, 0, ...]
-    # We take every second element to get one label per pair
-    y_true = y_true[::2]
-    # Construct pairwise order matrix: 1 if i < j (meaning i is better/higher score than j)
-    y_true = (y_true[:, None] < y_true[None, :]).float()
-    
-    y_pred = F.normalize(y_pred, p=2, dim=1)
-    # Cosine similarity between pairs (zigzag)
-    y_pred = torch.sum(y_pred[::2] * y_pred[1::2], dim=1) * tau
-    
-    # Pairwise difference of scores
-    y_pred = y_pred[:, None] - y_pred[None, :]
-    
-    # Mask out invalid comparisons
-    y_pred = (y_pred - (1 - y_true) * 1e12).view(-1)
-    
-    zero = torch.tensor([0.0], device=y_pred.device)
-    y_pred = torch.cat((zero, y_pred), dim=0)
-    return torch.logsumexp(y_pred, dim=0)
-
-
-def contrastive_with_negative_loss(
-    text: torch.Tensor,
-    pos: torch.Tensor,
-    neg: Optional[torch.Tensor] = None,
-    tau: float = 20.0
-) -> torch.Tensor:
-    """Compute contrastive loss with optional negatives."""
-    target = torch.cat((pos, neg), dim=0) if neg is not None else pos
-    q_norm = F.normalize(text, p=2, dim=1)
-    t_norm = F.normalize(target, p=2, dim=1)
-    scores = torch.mm(q_norm, t_norm.transpose(0, 1)) * tau
-    labels = torch.arange(len(scores), dtype=torch.long, device=scores.device)
-    return F.cross_entropy(scores, labels)
-
-
 def angle_loss(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,

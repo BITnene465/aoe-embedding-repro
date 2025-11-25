@@ -77,6 +77,10 @@ def _ensure_data_cache(root_dir: str) -> None:
     os.environ.setdefault("HF_DATASETS_CACHE", str(datasets_cache))
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_cache))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(models_cache))
+    
+    # Enforce offline mode to prevent accidental downloads during evaluation
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 
 def _parse_list_argument(raw: str | None, fallback: Iterable[str]) -> list[str]:

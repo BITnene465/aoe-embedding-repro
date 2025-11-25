@@ -1,13 +1,12 @@
 """Data loading and preprocessing utilities for AoE experiments."""
 
+import os
 import random
-from typing import Dict, List, Optional
-
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
+from dataclasses import dataclass
 
 import torch
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_from_disk
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import PaddingStrategy
 
@@ -58,7 +57,7 @@ class AngleDataCollator:
         if self.dataset_format is None:
             sample = features[0]
             if "text1" in sample and "text2" in sample and "score" in sample:
-                self.dataset_format = "A"  # Modified from 'label' to 'score' to match our internal format
+                self.dataset_format = "A"
             elif "text1" in sample and "text2" in sample and "label" in sample:
                  self.dataset_format = "A"
             elif "query" in sample and "positive" in sample and "negative" in sample:
@@ -66,15 +65,11 @@ class AngleDataCollator:
             elif "query" in sample and "positive" in sample:
                 self.dataset_format = "B"
             else:
-                # Fallback for our specific AnglePairDataset which uses text1, text2, score
                 if "text1" in sample and "text2" in sample:
                      self.dataset_format = "A"
                 else:
                     raise NotImplementedError("Unable to detect dataset format")
 
-        # Optimization: Collect all texts first to use batch tokenization
-        # This avoids the "tokenization followed by pad" warning from BertTokenizerFast
-        # and significantly improves performance by reducing Python overhead.
         all_texts: List[str] = []
         all_labels: List[float] = []
 
@@ -85,7 +80,6 @@ class AngleDataCollator:
             if self.dataset_format == "A":
                 text1 = self.sample_from_list(feature.get("text1", feature.get("text_1")))
                 text2 = self.sample_from_list(feature.get("text2", feature.get("text_2")))
-                # Handle score/label
                 val = feature.get("score", feature.get("label"))
                 if val is not None:
                     label = float(val)
@@ -115,15 +109,12 @@ class AngleDataCollator:
                     negative = self.doc_prompt.format(text=negative)
                 texts = [query, positive, negative]
 
-            # Collect texts and replicate label for each text in the pair/triplet
             all_texts.extend(texts)
             all_labels.extend([label] * len(texts))
 
         if not all_texts:
              raise ValueError("No features to process (empty input)")
 
-        # Batch tokenize all texts at once
-        # padding=self.padding (default 'longest') ensures efficient padding within the batch
         batch = self.tokenizer(
             all_texts,
             padding=self.padding,
@@ -132,40 +123,28 @@ class AngleDataCollator:
             return_tensors=return_tensors,
         )
 
-        # Filter duplicates if requested
-        # We filter based on input_ids to ensure uniqueness at the token level
         if self.filter_duplicate:
             unique_indices = []
             seen = set()
             input_ids = batch["input_ids"]
             
-            # Iterate and find unique indices
             for idx, row in enumerate(input_ids):
-                # Convert to tuple for hashing. 
-                # Note: This is necessary for set lookup.
                 row_tuple = tuple(row.tolist())
                 if row_tuple not in seen:
                     seen.add(row_tuple)
                     unique_indices.append(idx)
             
-            # If duplicates were found, slice the batch and labels
             if len(unique_indices) < len(all_texts):
-                # Slice all tensor fields in the batch (input_ids, attention_mask, etc.)
                 for key in batch:
                     batch[key] = batch[key][unique_indices]
-                
-                # Slice labels
                 all_labels = [all_labels[i] for i in unique_indices]
 
-        # Attach labels to the batch
         batch["labels"] = torch.tensor(all_labels, dtype=torch.float)
-        
         return batch
 
 
 def _pick_field(example: Dict[str, object], candidates: tuple[str, ...], default: object) -> object:
     """Return the first non-None field value from the provided candidate keys."""
-
     for key in candidates:
         if key in example and example[key] is not None:
             return example[key]
@@ -174,7 +153,6 @@ def _pick_field(example: Dict[str, object], candidates: tuple[str, ...], default
 
 def _resolve_mnli_split(split: str) -> str:
     """Map user-friendly split names to the MultiNLI equivalents."""
-
     mapping = {
         "validation": "validation_matched",
         "val": "validation_matched",
@@ -186,7 +164,6 @@ def _resolve_mnli_split(split: str) -> str:
 
 def _filter_valid_labels(example: Dict[str, int]) -> bool:
     """Return True when the example label is a non-negative integer."""
-
     label = example.get("label")
     if label is None:
         return False
@@ -197,15 +174,24 @@ def _filter_valid_labels(example: Dict[str, int]) -> bool:
     return False
 
 
-def load_nli_dataset(split: str = "train", cache_dir: Optional[str] = "data") -> Dataset:
-    """Load SNLI and MultiNLI, clean invalid labels, and merge them into one dataset."""
+def load_nli_dataset(split: str = "train", cache_dir: str = "data") -> Dataset:
+    """Load SNLI and MultiNLI from local disk."""
+    snli_path = os.path.join(cache_dir, "snli")
+    mnli_path = os.path.join(cache_dir, "multi_nli")
 
-    snli = load_dataset("snli", split=split, cache_dir=cache_dir).filter(_filter_valid_labels)
+    if not os.path.exists(snli_path) or not os.path.exists(mnli_path):
+        raise FileNotFoundError(f"NLI datasets not found in {cache_dir}. Please run download scripts first.")
 
+    snli = load_from_disk(snli_path)
+    if split in snli:
+        snli = snli[split]
+    snli = snli.filter(_filter_valid_labels)
+
+    mnli = load_from_disk(mnli_path)
     mnli_split = _resolve_mnli_split(split)
-    mnli = load_dataset("multi_nli", split=mnli_split, cache_dir=cache_dir).filter(
-        _filter_valid_labels
-    )
+    if mnli_split in mnli:
+        mnli = mnli[mnli_split]
+    mnli = mnli.filter(_filter_valid_labels)
 
     required_cols = {"premise", "hypothesis", "label"}
     if not required_cols.issubset(snli.column_names):
@@ -217,10 +203,13 @@ def load_nli_dataset(split: str = "train", cache_dir: Optional[str] = "data") ->
     return combined
 
 
-def load_stsb_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
-    """Return STS-B splits with fields (text1, text2, score)."""
+def load_stsb_splits(cache_dir: str = "data") -> Dict[str, Dataset]:
+    """Return STS-B splits from local disk."""
+    stsb_path = os.path.join(cache_dir, "stsb")
+    if not os.path.exists(stsb_path):
+        raise FileNotFoundError(f"STS-B dataset not found in {cache_dir}. Please run download scripts first.")
 
-    ds_dict = load_dataset("glue", "stsb", cache_dir=cache_dir)
+    ds_dict = load_from_disk(stsb_path)
     splits: Dict[str, Dataset] = {}
     for split_name in ("train", "validation", "test"):
         if split_name not in ds_dict:
@@ -232,20 +221,18 @@ def load_stsb_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
     return splits
 
 
-def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
-    """Load the SICK-R dataset (using mteb/sickr-sts which contains all data in 'test' split)."""
+def load_sickr_split(cache_dir: str = "data") -> Dataset:
+    """Load the SICK-R dataset from local disk."""
+    sickr_path = os.path.join(cache_dir, "sickr")
+    if not os.path.exists(sickr_path):
+        raise FileNotFoundError(f"SICK-R dataset not found in {cache_dir}. Please run download scripts first.")
 
-    try:
-        ds = load_dataset(
-            "mteb/sickr-sts",
-            split="test",
-            cache_dir=cache_dir,
-        )
-    except Exception as exc:  # pragma: no cover - dataset availability guard
-        raise NotImplementedError(
-            "SICK-R is not available via datasets in this environment."
-        ) from exc
-
+    ds = load_from_disk(sickr_path)
+    # sickr usually only has 'test' split in some versions, or 'train'/'validation'/'test'
+    # The original code hardcoded split="test" for mteb/sickr-sts
+    if "test" in ds:
+        ds = ds["test"]
+    
     rename_map = {
         "sentence1": "text1",
         "sentence2": "text2",
@@ -259,10 +246,13 @@ def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
     return ds
 
 
-def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
-    """Load the GitHub Issue Similarity dataset and expose sentence fields plus scores."""
+def load_gis_splits(cache_dir: str = "data") -> Dict[str, Dataset]:
+    """Load the GitHub Issue Similarity dataset from local disk."""
+    gis_path = os.path.join(cache_dir, "gis")
+    if not os.path.exists(gis_path):
+        raise FileNotFoundError(f"GIS dataset not found in {cache_dir}. Please run download scripts first.")
 
-    ds_dict = load_dataset("WhereIsAI/github-issue-similarity", cache_dir=cache_dir)
+    ds_dict = load_from_disk(gis_path)
 
     def normalize(example: Dict[str, object]) -> Dict[str, object]:
         text1 = _pick_field(
@@ -298,22 +288,27 @@ def load_gis_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
         }
 
     splits: Dict[str, Dataset] = {}
-    for split_name, split_ds in ds_dict.items():
-        splits[split_name] = split_ds.map(
-            normalize,
-            remove_columns=split_ds.column_names,
-        )
+    # ds_dict from load_from_disk might be a DatasetDict or just a Dataset depending on how it was saved.
+    # Usually load_dataset returns DatasetDict which saves as such.
+    if hasattr(ds_dict, "items"):
+        for split_name, split_ds in ds_dict.items():
+            splits[split_name] = split_ds.map(
+                normalize,
+                remove_columns=split_ds.column_names,
+            )
+    else:
+        # Fallback if it's a single dataset (unlikely for GIS but good safety)
+        splits["train"] = ds_dict.map(normalize, remove_columns=ds_dict.column_names)
+        
     return splits
 
 
 def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
-    # 官方配置：排除neutral，只保留 entailment(1) 和 contradiction(0) 二分类
     label_scores = {
         "entailment": 1.0,
         "contradiction": 0.0,
-        0: 1.0,  # entailment numeric
-        2: 0.0,  # contradiction numeric
-        # neutral (1) is excluded
+        0: 1.0,
+        2: 0.0,
     }
     pairs: List[Dict[str, object]] = []
     for example in dataset:
@@ -322,7 +317,6 @@ def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
         label = example.get("label")
         if premise is None or hypothesis is None or label is None:
             continue
-        # 官方做法：跳过 neutral 样本
         if label == "neutral" or label == 1:
             continue
         score = label_scores.get(label)
@@ -343,7 +337,6 @@ def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
 def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
     pairs: List[Dict[str, object]] = []
     for example in dataset:
-        # 尝试从多个可能的字段名中获取数据（兼容不同数据源）
         sent1 = example.get("text1") or example.get("sentence1")
         sent2 = example.get("text2") or example.get("sentence2")
         score = example.get("score") or example.get("label")
@@ -365,7 +358,7 @@ def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
     return pairs
 
 
-def load_angle_pairs(dataset: str, split: str, cache_dir: Optional[str] = "data") -> List[Dict[str, object]]:
+def load_angle_pairs(dataset: str, split: str, cache_dir: str = "data") -> List[Dict[str, object]]:
     dataset_raw = (dataset or "").strip()
     split_norm = (split or "").lower()
     if not dataset_raw:
@@ -398,7 +391,7 @@ def _parse_dataset_token(token: str) -> tuple[str, Optional[str]]:
     return name.lower(), (split or "").lower() or None
 
 
-def _load_single_dataset(name: str, split: str, cache_dir: Optional[str]) -> List[Dict[str, object]]:
+def _load_single_dataset(name: str, split: str, cache_dir: str) -> List[Dict[str, object]]:
     split_norm = (split or "").lower()
 
     if name == "nli":
@@ -423,3 +416,5 @@ def _load_single_dataset(name: str, split: str, cache_dir: Optional[str]) -> Lis
         return _dataset_to_angle_pairs(load_sickr_split(cache_dir=cache_dir))
 
     raise ValueError(f"Unknown dataset '{name}' for AoE angle training")
+
+

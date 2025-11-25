@@ -1,5 +1,6 @@
 """Model definitions for reproducing AoE sentence encoders."""
 
+import os
 from typing import List, Optional, Tuple
 
 import torch
@@ -24,7 +25,7 @@ class SentenceEncoder(nn.Module):
 			model_name: HuggingFace model name.
 			complex_mode: Whether to output complex embeddings (real+imag).
 			pooling: Pooling strategy ('cls', 'mean', 'cls_avg', 'max').
-			cache_dir: Directory to cache models.
+			cache_dir: Directory where models are stored locally.
 			prompt: Optional prompt template to use during inference. 
 					Note: This class doesn't automatically apply the prompt in encode(), 
 					but stores it for reference/reproducibility.
@@ -34,8 +35,23 @@ class SentenceEncoder(nn.Module):
 		if pooling not in {"cls", "mean", "cls_avg", "max"}:
 			raise ValueError("pooling must be one of: cls, mean, cls_avg, max")
 
-		self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-		self.model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
+		# Ensure we look for the model in the local cache directory if it's not a full path
+		model_path = model_name
+		if cache_dir and not os.path.isabs(model_name) and not os.path.exists(model_name):
+			possible_path = os.path.join(cache_dir, model_name)
+			if os.path.exists(possible_path):
+				model_path = possible_path
+		
+		# Enforce local loading
+		try:
+			self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+			self.model = AutoModel.from_pretrained(model_path, local_files_only=True)
+		except OSError as e:
+			raise OSError(
+				f"Could not load model from '{model_path}'. "
+				f"Please ensure it is downloaded to '{cache_dir}' using scripts/download/download_model.py"
+			) from e
+
 		self.complex_mode = complex_mode
 		self.pooling = pooling
 		self.cache_dir = cache_dir

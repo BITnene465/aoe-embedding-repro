@@ -103,7 +103,7 @@ def train_epoch(
     encoder: SentenceEncoder,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    device: torch.device,
+    accelerator: "Accelerator", # Type hint string to avoid runtime import if not needed, or import it
     angle_tau: float,
     cl_scale: float,
     w_angle: float,
@@ -117,11 +117,14 @@ def train_epoch(
     scheduler_step: Optional[Callable[[], None]] = None,
 ) -> Tuple[float, float, float, int]:
     encoder.train()
-    grad_accum_steps = max(1, grad_accum_steps)
+    # grad_accum_steps is handled by accelerator.accumulate
     angle_total = 0.0
     contrast_total = 0.0
     loss_total = 0.0
     steps = 0
+    
+    # We don't need manual zero_grad here if we use accumulate properly, 
+    # but good practice to ensure clean start
     optimizer.zero_grad(set_to_none=True)
 
     iterator = dataloader
@@ -130,65 +133,75 @@ def train_epoch(
         iterator = tqdm(dataloader, desc=desc, leave=False)
 
     for batch in iterator:
-        steps += 1
-        if hasattr(batch, "keys") and "input_ids" in batch:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            y_true = batch["labels"].to(device)
-            
-            encoded = encoder(input_ids, attention_mask)
-            if isinstance(encoded, tuple):
-                 z_re, z_im = encoded
-                 y_pred = torch.cat([z_re, z_im], dim=1)
+        # accelerator.accumulate handles gradient synchronization
+        with accelerator.accumulate(encoder):
+            steps += 1
+            # Data is already on device thanks to accelerator.prepare
+            if hasattr(batch, "keys") and "input_ids" in batch:
+                input_ids = batch["input_ids"]
+                attention_mask = batch["attention_mask"]
+                y_true = batch["labels"]
+                
+                encoded = encoder(input_ids, attention_mask)
+                if isinstance(encoded, tuple):
+                     z_re, z_im = encoded
+                     y_pred = torch.cat([z_re, z_im], dim=1)
+                else:
+                     y_pred = encoded
             else:
-                 y_pred = encoded
-        else:
-            texts, scores = batch
-            y_true = scores.to(device)
-            y_pred = _encode_zigzag(encoder, texts, device, max_length)
-        loss, stats = aoe_total_loss(
-            y_true,
-            y_pred,
-            angle_tau=angle_tau,
-            cl_scale=cl_scale,
-            w_angle=w_angle,
-            w_cl=w_cl,
-        )
-        scaled_loss = loss / grad_accum_steps
-        scaled_loss.backward()
-        if steps % grad_accum_steps == 0:
+                texts, scores = batch
+                # For custom collate (list of strings), we might still need manual handling if not tensor
+                # But build_angle_dataloader uses AngleDataCollator which returns tensors.
+                # If using _angle_collate, it returns (texts, scores). 
+                # accelerate prepares DataLoader, but if it yields non-tensors, it might not move them?
+                # Actually _angle_collate returns (list[str], tensor). The tensor will be moved.
+                # The list[str] won't. _encode_zigzag needs device.
+                # We can get device from accelerator.device
+                y_true = scores # accelerator moves this
+                y_pred = _encode_zigzag(encoder, texts, accelerator.device, max_length)
+
+            loss, stats = aoe_total_loss(
+                y_true,
+                y_pred,
+                angle_tau=angle_tau,
+                cl_scale=cl_scale,
+                w_angle=w_angle,
+                w_cl=w_cl,
+            )
+            
+            # No manual scaling needed with accelerator.backward if we don't use mean reduction?
+            # Wait, PyTorch loss is usually mean. Accumulation sums gradients. 
+            # Accelerator handles the scaling if gradient_accumulation_steps > 1?
+            # Actually, standard practice with accelerator is just backward(loss).
+            accelerator.backward(loss)
+            
             optimizer.step()
             if scheduler_step is not None:
                 scheduler_step()
             optimizer.zero_grad(set_to_none=True)
-        angle_total += stats["angle_loss"]
-        contrast_total += stats["contrastive_loss"]
-        loss_total += stats["total_loss"]
+            
+            # Accumulate stats (these are tensors, detach to avoid graph)
+            angle_total += stats["angle_loss"].item()
+            contrast_total += stats["contrastive_loss"].item()
+            loss_total += stats["total_loss"].item()
 
-        if on_batch_end is not None:
-            on_batch_end(
-                {
-                    "epoch": epoch_idx,
-                    "batch": steps,
-                    "train_angle": stats["angle_loss"],
-                    "train_contrast": stats["contrastive_loss"],
-                    "train_total": stats["total_loss"],
-                }
-            )
+            if on_batch_end is not None:
+                on_batch_end(
+                    {
+                        "epoch": epoch_idx,
+                        "batch": steps,
+                        "train_angle": stats["angle_loss"].item(),
+                        "train_contrast": stats["contrastive_loss"].item(),
+                        "train_total": stats["total_loss"].item(),
+                    }
+                )
 
-        if show_progress and hasattr(iterator, "set_postfix"):
-            iterator.set_postfix(
-                loss=f"{stats['total_loss']:.4f}",
-                angle=f"{stats['angle_loss']:.4f}",
-                contrast=f"{stats['contrastive_loss']:.4f}",
-            )
-
-    remainder = steps % grad_accum_steps
-    if remainder != 0:
-        optimizer.step()
-        if scheduler_step is not None:
-            scheduler_step()
-        optimizer.zero_grad(set_to_none=True)
+            if show_progress and hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(
+                    loss=f"{stats['total_loss'].item():.4f}",
+                    angle=f"{stats['angle_loss'].item():.4f}",
+                    contrast=f"{stats['contrastive_loss'].item():.4f}",
+                )
 
     if show_progress and hasattr(iterator, "close"):
         iterator.close()
@@ -222,10 +235,11 @@ def evaluate_epoch(
 
     for batch in iterator:
         steps += 1
+        # Data is already on device thanks to accelerator.prepare
         if hasattr(batch, "keys") and "input_ids" in batch:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            y_true = batch["labels"].to(device)
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
+            y_true = batch["labels"]
             
             encoded = encoder(input_ids, attention_mask)
             if isinstance(encoded, tuple):
@@ -235,8 +249,9 @@ def evaluate_epoch(
                  y_pred = encoded
         else:
             texts, scores = batch
-            y_true = scores.to(device)
+            y_true = scores
             y_pred = _encode_zigzag(encoder, texts, device, max_length)
+            
         loss, stats = aoe_total_loss(
             y_true,
             y_pred,
@@ -245,25 +260,25 @@ def evaluate_epoch(
             w_angle=w_angle,
             w_cl=w_cl,
         )
-        angle_total += stats["angle_loss"]
-        contrast_total += stats["contrastive_loss"]
-        loss_total += stats["total_loss"]
+        angle_total += stats["angle_loss"].item()
+        contrast_total += stats["contrastive_loss"].item()
+        loss_total += stats["total_loss"].item()
 
         if on_batch_end is not None:
             on_batch_end(
                 {
                     "batch": steps,
-                    "eval_angle": stats["angle_loss"],
-                    "eval_contrast": stats["contrastive_loss"],
-                    "eval_total": stats["total_loss"],
+                    "eval_angle": stats["angle_loss"].item(),
+                    "eval_contrast": stats["contrastive_loss"].item(),
+                    "eval_total": stats["total_loss"].item(),
                 }
             )
 
         if show_progress and hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
-                loss=f"{stats['total_loss']:.4f}",
-                angle=f"{stats['angle_loss']:.4f}",
-                contrast=f"{stats['contrastive_loss']:.4f}",
+                loss=f"{stats['total_loss'].item():.4f}",
+                angle=f"{stats['angle_loss'].item():.4f}",
+                contrast=f"{stats['contrastive_loss'].item():.4f}",
             )
 
     if show_progress and hasattr(iterator, "close"):

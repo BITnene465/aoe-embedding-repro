@@ -10,7 +10,8 @@ Reproduces the AoE (Angle-optimized Embeddings) method from the ACL 2024 paper u
 - numpy
 - scipy
 - tqdm
-- matplotlib (optional)
+- accelerate
+- matplotlib
 - tensorboard (optional, for experiment tracking)
 
 ## Installation
@@ -32,12 +33,30 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Data & Model Preparation
+
+Before training, download the necessary datasets and models.
+
+```bash
+# Download datasets (NLI, STS-B, SICK-R, GIS, MTEB STS)
+python3 scripts/download/download_data.py --output_dir data --datasets all
+
+# Download backbone model
+python3 scripts/download/download_model.py --model_name bert-base-uncased --output_dir models
+```
+
 ## Quick Start
+
+For a detailed step-by-step guide, see **[experiment/reproduction_guide.md](experiment/reproduction_guide.md)**.
 
 ### Stage 1: NLI Pretraining
 
 ```bash
+# Single GPU
 bash scripts/train_pretrain_nli.sh
+
+# Multi-GPU (Accelerate)
+accelerate launch scripts/train_pretrain_nli.sh
 ```
 
 Official configuration:
@@ -49,7 +68,13 @@ Official configuration:
 ### Stage 2: STS Mixed Fine-tuning
 
 ```bash
-INIT_CHECKPOINT=output/bert_nli_aoe_<timestamp>/ckpt bash scripts/finetune_aoe_mixed.sh
+export INIT_CHECKPOINT=output/bert_nli_aoe_<timestamp>/ckpt
+
+# Single GPU
+bash scripts/finetune_aoe_mixed.sh
+
+# Multi-GPU (Accelerate)
+accelerate launch scripts/finetune_aoe_mixed.sh
 ```
 
 Fine-tune on STS-B + GIS + SICK-R:
@@ -95,12 +120,14 @@ python -m aoe.train \
 - `GRAD_ACCUM_STEPS` (default: 16)
 - `NLI_W_ANGLE` (default: 1.0)
 - `WARMUP_STEPS` (default: 100)
+- `LEARNING_RATE` (default: 5e-5)
 
 **STS Fine-tuning** (`finetune_aoe_mixed.sh`):
 - `EPOCHS` (default: 5)
 - `STS_W_ANGLE` (default: 0.02)
 - `AOE_DATASETS` (default: `stsb@train,gis@train,sickr@validation`)
 - `INIT_CHECKPOINT` (required: path to NLI checkpoint)
+- `LEARNING_RATE` (default: 2e-5)
 
 Example:
 ```bash

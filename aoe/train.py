@@ -123,10 +123,27 @@ def main() -> None:
     config = TrainConfig.from_args(args)
 
     set_seed(config.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Initialize Accelerator
+    from accelerate import Accelerator
+    accelerator = Accelerator(gradient_accumulation_steps=config.grad_accum_steps)
+    device = accelerator.device
 
-    run_dirs = _prepare_run_dirs(config.output_dir, config.run_name)
-    config.save_json(run_dirs["config"])
+    # Only main process should create directories
+    if accelerator.is_main_process:
+        run_dirs = _prepare_run_dirs(config.output_dir, config.run_name)
+        config.save_json(run_dirs["config"])
+    else:
+        # Other processes need run_dirs for logging paths, but shouldn't create them
+        # We can just reconstruct the paths without makedirs
+        run_dir = os.path.join(config.output_dir, config.run_name or "default")
+        run_dirs = {
+            "run": run_dir,
+            "ckpt": os.path.join(run_dir, "ckpt"),
+            "tensorboard_default": os.path.join(run_dir, "tensorboard"),
+            "metrics_default": os.path.join(run_dir, "metrics.jsonl"),
+            "config": os.path.join(run_dir, "train_config.json"),
+        }
 
     # Resolve prompt
     prompt_text = None
@@ -153,7 +170,8 @@ def main() -> None:
         loaded: SentenceEncoder = torch.load(ckpt_path, map_location="cpu")
         encoder.load_state_dict(loaded.state_dict())
 
-    encoder = encoder.to(device)
+    # No manual .to(device), handled by accelerator.prepare
+    # encoder = encoder.to(device)
 
     train_loader = build_angle_dataloader(
         dataset=config.dataset,
@@ -190,10 +208,17 @@ def main() -> None:
             max_length=config.max_length,
         )
 
+    # Prepare everything with accelerator
+    encoder, optimizer, train_loader, eval_loader, scheduler = accelerator.prepare(
+        encoder, optimizer, train_loader, eval_loader, scheduler
+    )
+
     metrics_path = resolve_metrics_path(run_dirs["metrics_default"], config.metrics_path)
     batch_logger = None
     global_step = 0
-    if metrics_path is not None:
+    
+    # Only main process logs metrics
+    if accelerator.is_main_process and metrics_path is not None:
         os.makedirs(os.path.dirname(metrics_path) or ".", exist_ok=True)
         with open(metrics_path, "w", encoding="utf-8") as handle:
             handle.write("")
@@ -211,7 +236,8 @@ def main() -> None:
 
     writer: SummaryWriter | None = None
     tb_dir = resolve_tensorboard_dir(run_dirs["tensorboard_default"], config.tensorboard_dir)
-    if tb_dir is not None:
+    # Only main process logs to tensorboard
+    if accelerator.is_main_process and tb_dir is not None:
         os.makedirs(tb_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=tb_dir)
         writer.add_text("train_config/json", json.dumps(config.to_dict(), indent=2), 0)
@@ -224,7 +250,7 @@ def main() -> None:
             encoder,
             train_loader,
             optimizer,
-            device,
+            accelerator, # Pass accelerator instead of device
             angle_tau=config.angle_tau,
             cl_scale=config.cl_scale,
             w_angle=config.w_angle,
@@ -232,7 +258,7 @@ def main() -> None:
             max_length=config.max_length,
             epoch_idx=epoch,
             total_epochs=config.epochs,
-            show_progress=not config.no_progress_bar,
+            show_progress=(not config.no_progress_bar) and accelerator.is_main_process,
             on_batch_end=batch_logger,
             grad_accum_steps=config.grad_accum_steps,
             scheduler_step=scheduler.step if scheduler is not None else None,
@@ -243,57 +269,63 @@ def main() -> None:
             eval_angle, eval_contrast, eval_total, _ = evaluate_epoch(
                 encoder,
                 eval_loader,
-                device,
+                device, # eval can still use device, or we can update it too. Let's keep device for now as it's just a property
                 angle_tau=config.angle_tau,
                 cl_scale=config.cl_scale,
                 w_angle=config.w_angle,
                 w_cl=config.w_cl,
                 max_length=config.max_length,
-                show_progress=not config.no_progress_bar,
+                show_progress=(not config.no_progress_bar) and accelerator.is_main_process,
             )
 
-        message = (
-            f"Epoch {epoch}: train_angle={angle_avg:.4f} train_contrast={contrast_avg:.4f} "
-            f"train_total={total_avg:.4f}"
-        )
-        if eval_total is not None:
-            message += (
-                f" | eval_angle={eval_angle:.4f} eval_contrast={eval_contrast:.4f}"
-                f" eval_total={eval_total:.4f}"
+        # Logging only on main process
+        if accelerator.is_main_process:
+            message = (
+                f"Epoch {epoch}: train_angle={angle_avg:.4f} train_contrast={contrast_avg:.4f} "
+                f"train_total={total_avg:.4f}"
             )
-        print(message, flush=True)
-
-        if metrics_path is not None:
-            record = {
-                "type": "train_epoch",
-                "epoch": epoch,
-                "run_dir": run_dirs["run"],
-                "train_angle": angle_avg,
-                "train_contrast": contrast_avg,
-                "train_total": total_avg,
-            }
             if eval_total is not None:
-                record.update(
-                    {
-                        "eval_angle": eval_angle,
-                        "eval_contrast": eval_contrast,
-                        "eval_total": eval_total,
-                    }
+                message += (
+                    f" | eval_angle={eval_angle:.4f} eval_contrast={eval_contrast:.4f}"
+                    f" eval_total={eval_total:.4f}"
                 )
-            append_metrics(metrics_path, record)
+            print(message, flush=True)
 
-        if writer is not None:
-            writer.add_scalar("loss/train_total", total_avg, epoch)
-            writer.add_scalar("loss/train_angle", angle_avg, epoch)
-            writer.add_scalar("loss/train_contrast", contrast_avg, epoch)
-            if eval_total is not None:
-                writer.add_scalar("loss/eval_total", eval_total, epoch)
-                writer.add_scalar("loss/eval_angle", eval_angle, epoch)
-                writer.add_scalar("loss/eval_contrast", eval_contrast, epoch)
+            if metrics_path is not None:
+                record = {
+                    "type": "train_epoch",
+                    "epoch": epoch,
+                    "run_dir": run_dirs["run"],
+                    "train_angle": angle_avg,
+                    "train_contrast": contrast_avg,
+                    "train_total": total_avg,
+                }
+                if eval_total is not None:
+                    record.update(
+                        {
+                            "eval_angle": eval_angle,
+                            "eval_contrast": eval_contrast,
+                            "eval_total": eval_total,
+                        }
+                    )
+                append_metrics(metrics_path, record)
 
-    save_checkpoint(encoder, run_dirs["ckpt"])
+            if writer is not None:
+                writer.add_scalar("loss/train_total", total_avg, epoch)
+                writer.add_scalar("loss/train_angle", angle_avg, epoch)
+                writer.add_scalar("loss/train_contrast", contrast_avg, epoch)
+                if eval_total is not None:
+                    writer.add_scalar("loss/eval_total", eval_total, epoch)
+                    writer.add_scalar("loss/eval_angle", eval_angle, epoch)
+                    writer.add_scalar("loss/eval_contrast", eval_contrast, epoch)
 
-    if writer is not None:
+    # Save checkpoint (only main process)
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        unwrapped_encoder = accelerator.unwrap_model(encoder)
+        save_checkpoint(unwrapped_encoder, run_dirs["ckpt"])
+
+    if accelerator.is_main_process and writer is not None:
         final_metrics = {
             "train_total": total_avg,
             "train_angle": angle_avg,
