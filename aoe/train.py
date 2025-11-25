@@ -126,7 +126,13 @@ def main() -> None:
     
     # Initialize Accelerator
     from accelerate import Accelerator
-    accelerator = Accelerator(gradient_accumulation_steps=config.grad_accum_steps)
+    from accelerate.utils import DistributedDataParallelKwargs
+
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=config.grad_accum_steps,
+        kwargs_handlers=[ddp_kwargs],
+    )
     device = accelerator.device
 
     # Only main process should create directories
@@ -269,7 +275,7 @@ def main() -> None:
             eval_angle, eval_contrast, eval_total, _ = evaluate_epoch(
                 encoder,
                 eval_loader,
-                device, # eval can still use device, or we can update it too. Let's keep device for now as it's just a property
+                accelerator, # Pass accelerator for metric aggregation
                 angle_tau=config.angle_tau,
                 cl_scale=config.cl_scale,
                 w_angle=config.w_angle,

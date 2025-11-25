@@ -68,7 +68,8 @@ def build_angle_dataloader(
             tokenizer=tokenizer,
             text_prompt=prompt,
             max_length=max_length,
-            dataset_format="A" # Default to A for now as we mostly use text1/text2/score
+            dataset_format="A", # Default to A for now as we mostly use text1/text2/score
+            filter_duplicate=False, # Must be False to preserve pairs for angle_loss --- important ！！！
         )
 
     return DataLoader(
@@ -180,27 +181,27 @@ def train_epoch(
                 scheduler_step()
             optimizer.zero_grad(set_to_none=True)
             
-            # Accumulate stats (these are tensors, detach to avoid graph)
-            angle_total += stats["angle_loss"].item()
-            contrast_total += stats["contrastive_loss"].item()
-            loss_total += stats["total_loss"].item()
+            # Accumulate stats (these are floats, not tensors)
+            angle_total += stats["angle_loss"]
+            contrast_total += stats["contrastive_loss"]
+            loss_total += stats["total_loss"]
 
             if on_batch_end is not None:
                 on_batch_end(
                     {
                         "epoch": epoch_idx,
                         "batch": steps,
-                        "train_angle": stats["angle_loss"].item(),
-                        "train_contrast": stats["contrastive_loss"].item(),
-                        "train_total": stats["total_loss"].item(),
+                        "train_angle": stats["angle_loss"],
+                        "train_contrast": stats["contrastive_loss"],
+                        "train_total": stats["total_loss"],
                     }
                 )
 
             if show_progress and hasattr(iterator, "set_postfix"):
                 iterator.set_postfix(
-                    loss=f"{stats['total_loss'].item():.4f}",
-                    angle=f"{stats['angle_loss'].item():.4f}",
-                    contrast=f"{stats['contrastive_loss'].item():.4f}",
+                    loss=f"{stats['total_loss']:.4f}",
+                    angle=f"{stats['angle_loss']:.4f}",
+                    contrast=f"{stats['contrastive_loss']:.4f}",
                 )
 
     if show_progress and hasattr(iterator, "close"):
@@ -214,7 +215,7 @@ def train_epoch(
 def evaluate_epoch(
     encoder: SentenceEncoder,
     dataloader: DataLoader,
-    device: torch.device,
+    accelerator: "Accelerator",
     angle_tau: float,
     cl_scale: float,
     w_angle: float,
@@ -250,7 +251,7 @@ def evaluate_epoch(
         else:
             texts, scores = batch
             y_true = scores
-            y_pred = _encode_zigzag(encoder, texts, device, max_length)
+            y_pred = _encode_zigzag(encoder, texts, accelerator.device, max_length)
             
         loss, stats = aoe_total_loss(
             y_true,
@@ -260,25 +261,25 @@ def evaluate_epoch(
             w_angle=w_angle,
             w_cl=w_cl,
         )
-        angle_total += stats["angle_loss"].item()
-        contrast_total += stats["contrastive_loss"].item()
-        loss_total += stats["total_loss"].item()
+        angle_total += stats["angle_loss"]
+        contrast_total += stats["contrastive_loss"]
+        loss_total += stats["total_loss"]
 
         if on_batch_end is not None:
             on_batch_end(
                 {
                     "batch": steps,
-                    "eval_angle": stats["angle_loss"].item(),
-                    "eval_contrast": stats["contrastive_loss"].item(),
-                    "eval_total": stats["total_loss"].item(),
+                    "eval_angle": stats["angle_loss"],
+                    "eval_contrast": stats["contrastive_loss"],
+                    "eval_total": stats["total_loss"],
                 }
             )
 
         if show_progress and hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
-                loss=f"{stats['total_loss'].item():.4f}",
-                angle=f"{stats['angle_loss'].item():.4f}",
-                contrast=f"{stats['contrastive_loss'].item():.4f}",
+                loss=f"{stats['total_loss']:.4f}",
+                angle=f"{stats['angle_loss']:.4f}",
+                contrast=f"{stats['contrastive_loss']:.4f}",
             )
 
     if show_progress and hasattr(iterator, "close"):
