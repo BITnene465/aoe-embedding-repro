@@ -16,12 +16,23 @@ class SentenceEncoder(nn.Module):
 		complex_mode: bool = False,
 		pooling: str = "cls",
 		cache_dir: Optional[str] = "models",
+		prompt: Optional[str] = None,
 	) -> None:
-		"""Initialize tokenizer, encoder, and pooling strategy."""
+		"""Initialize tokenizer, encoder, and pooling strategy.
+		
+		Args:
+			model_name: HuggingFace model name.
+			complex_mode: Whether to output complex embeddings (real+imag).
+			pooling: Pooling strategy ('cls', 'mean', 'cls_avg', 'max').
+			cache_dir: Directory to cache models.
+			prompt: Optional prompt template to use during inference. 
+					Note: This class doesn't automatically apply the prompt in encode(), 
+					but stores it for reference/reproducibility.
+		"""
 
 		super().__init__()
-		if pooling not in {"cls", "mean"}:
-			raise ValueError("pooling must be either 'cls' or 'mean'")
+		if pooling not in {"cls", "mean", "cls_avg", "max"}:
+			raise ValueError("pooling must be one of: cls, mean, cls_avg, max")
 
 		self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
 		self.model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
@@ -29,6 +40,7 @@ class SentenceEncoder(nn.Module):
 		self.pooling = pooling
 		self.cache_dir = cache_dir
 		self.model_name = model_name
+		self.prompt = prompt
 
 		for param in self.model.parameters():
 			param.requires_grad = True
@@ -39,10 +51,48 @@ class SentenceEncoder(nn.Module):
 		if self.pooling == "cls":
 			return hidden_states[:, 0]
 
+		if self.pooling == "max":
+			mask = attention_mask.unsqueeze(-1).type_as(hidden_states)
+			# Fill padding with very small value before max
+			masked_hidden = hidden_states.masked_fill(~mask.bool(), -1e9)
+			return torch.max(masked_hidden, dim=1)[0]
+
+		# Mean pooling logic
 		mask = attention_mask.unsqueeze(-1).type_as(hidden_states)
 		masked_hidden = hidden_states * mask
 		denom = mask.sum(dim=1).clamp(min=1e-9)
-		return masked_hidden.sum(dim=1) / denom
+		mean_pooled = masked_hidden.sum(dim=1) / denom
+
+		if self.pooling == "mean":
+			return mean_pooled
+
+		if self.pooling == "cls_avg":
+			return (hidden_states[:, 0] + mean_pooled) / 2.0
+
+		raise ValueError(f"Unsupported pooling strategy: {self.pooling}")
+
+	def forward(
+		self,
+		input_ids: torch.Tensor,
+		attention_mask: torch.Tensor,
+		token_type_ids: Optional[torch.Tensor] = None,
+	) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
+		"""Compute embeddings from pre-tokenized inputs."""
+		outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+		hidden_states = outputs.last_hidden_state
+		sentence_repr = self._pool(hidden_states, attention_mask)
+
+		if not self.complex_mode:
+			return sentence_repr
+
+		hidden_dim = sentence_repr.size(-1)
+		if hidden_dim % 2 != 0:
+			raise ValueError("Hidden dimension must be even for complex mode")
+
+		dim_half = hidden_dim // 2
+		z_re = sentence_repr[:, :dim_half]
+		z_im = sentence_repr[:, dim_half:]
+		return z_re, z_im
 
 	def encode(
 		self,

@@ -12,6 +12,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+from aoe.data import Prompts
 from aoe.model import SentenceEncoder
 from aoe.train_utils import (
     TrainConfig,
@@ -64,7 +65,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Validation split name; use 'none' to skip evaluation",
     )
     parser.add_argument("--backbone", default="bert-base-uncased")
-    parser.add_argument("--pooling", choices=["cls", "mean"], default="cls")
+    parser.add_argument("--pooling", choices=["cls", "mean", "cls_avg", "max"], default="cls")
+    parser.add_argument("--prompt", default=None, help="Prompt template name (e.g., A, B, C) or custom string")
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -126,11 +128,20 @@ def main() -> None:
     run_dirs = _prepare_run_dirs(config.output_dir, config.run_name)
     config.save_json(run_dirs["config"])
 
+    # Resolve prompt
+    prompt_text = None
+    if config.prompt:
+        if hasattr(Prompts, config.prompt):
+            prompt_text = getattr(Prompts, config.prompt)
+        else:
+            prompt_text = config.prompt
+
     encoder = SentenceEncoder(
         model_name=config.backbone,
         complex_mode=True,
         pooling=config.pooling,
         cache_dir=config.model_cache,
+        prompt=prompt_text,
     )
 
     if config.init_checkpoint:
@@ -150,6 +161,9 @@ def main() -> None:
         batch_size=config.batch_size,
         cache_dir=config.data_cache,
         shuffle=True,
+        tokenizer=encoder.tokenizer,
+        prompt=prompt_text,
+        max_length=config.max_length,
     )
 
     optimizer = AdamW(encoder.parameters(), lr=config.lr)
@@ -171,6 +185,9 @@ def main() -> None:
             batch_size=config.eval_batch_size or config.batch_size,
             cache_dir=config.data_cache,
             shuffle=False,
+            tokenizer=encoder.tokenizer,
+            prompt=prompt_text,
+            max_length=config.max_length,
         )
 
     metrics_path = resolve_metrics_path(run_dirs["metrics_default"], config.metrics_path)

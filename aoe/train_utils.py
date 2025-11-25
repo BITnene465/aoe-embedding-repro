@@ -13,7 +13,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from aoe.data import load_angle_pairs
+from transformers import PreTrainedTokenizerBase
+
+from aoe.data import AngleDataCollator, Prompts, load_angle_pairs
 from aoe.loss import aoe_total_loss
 from aoe.model import SentenceEncoder
 
@@ -51,15 +53,29 @@ def build_angle_dataloader(
     batch_size: int,
     cache_dir: Optional[str],
     shuffle: bool,
+    tokenizer: Optional[PreTrainedTokenizerBase] = None,
+    prompt: Optional[str] = None,
+    max_length: Optional[int] = None,
 ) -> DataLoader:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     pairs = load_angle_pairs(dataset, split, cache_dir)
+    
+    collate_fn = _angle_collate
+    if tokenizer is not None:
+        # Use the official-style collator if tokenizer is provided
+        collate_fn = AngleDataCollator(
+            tokenizer=tokenizer,
+            text_prompt=prompt,
+            max_length=max_length,
+            dataset_format="A" # Default to A for now as we mostly use text1/text2/score
+        )
+
     return DataLoader(
         AnglePairDataset(pairs),
         batch_size=batch_size,
         shuffle=shuffle,
-        collate_fn=_angle_collate,
+        collate_fn=collate_fn,
     )
 
 
@@ -113,10 +129,23 @@ def train_epoch(
         desc = f"Epoch {epoch_idx}/{total_epochs}"
         iterator = tqdm(dataloader, desc=desc, leave=False)
 
-    for texts, scores in iterator:
+    for batch in iterator:
         steps += 1
-        y_true = scores.to(device)
-        y_pred = _encode_zigzag(encoder, texts, device, max_length)
+        if hasattr(batch, "keys") and "input_ids" in batch:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            y_true = batch["labels"].to(device)
+            
+            encoded = encoder(input_ids, attention_mask)
+            if isinstance(encoded, tuple):
+                 z_re, z_im = encoded
+                 y_pred = torch.cat([z_re, z_im], dim=1)
+            else:
+                 y_pred = encoded
+        else:
+            texts, scores = batch
+            y_true = scores.to(device)
+            y_pred = _encode_zigzag(encoder, texts, device, max_length)
         loss, stats = aoe_total_loss(
             y_true,
             y_pred,
@@ -191,10 +220,23 @@ def evaluate_epoch(
     if show_progress:
         iterator = tqdm(dataloader, desc="Eval", leave=False)
 
-    for texts, scores in iterator:
+    for batch in iterator:
         steps += 1
-        y_true = scores.to(device)
-        y_pred = _encode_zigzag(encoder, texts, device, max_length)
+        if hasattr(batch, "keys") and "input_ids" in batch:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            y_true = batch["labels"].to(device)
+            
+            encoded = encoder(input_ids, attention_mask)
+            if isinstance(encoded, tuple):
+                 z_re, z_im = encoded
+                 y_pred = torch.cat([z_re, z_im], dim=1)
+            else:
+                 y_pred = encoded
+        else:
+            texts, scores = batch
+            y_true = scores.to(device)
+            y_pred = _encode_zigzag(encoder, texts, device, max_length)
         loss, stats = aoe_total_loss(
             y_true,
             y_pred,
@@ -262,6 +304,7 @@ class TrainConfig:
     eval_split: Optional[str]
     backbone: str
     pooling: str
+    prompt: Optional[str]
     batch_size: int
     eval_batch_size: Optional[int]
     epochs: int
@@ -291,6 +334,7 @@ class TrainConfig:
             eval_split=getattr(args, "eval_split", None),
             backbone=getattr(args, "backbone"),
             pooling=getattr(args, "pooling", "cls"),
+            prompt=getattr(args, "prompt", None),
             batch_size=getattr(args, "batch_size"),
             eval_batch_size=getattr(args, "eval_batch_size", None),
             epochs=getattr(args, "epochs"),

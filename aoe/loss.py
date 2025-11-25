@@ -8,6 +8,45 @@ import torch
 import torch.nn.functional as F
 
 
+
+def cosine_loss(y_true: torch.Tensor, y_pred: torch.Tensor, tau: float = 20.0) -> torch.Tensor:
+    """Compute cosine loss matching official AnglE."""
+    # y_true is zigzag [batch_size], e.g. [1, 1, 0, 0, ...]
+    # We take every second element to get one label per pair
+    y_true = y_true[::2]
+    # Construct pairwise order matrix: 1 if i < j (meaning i is better/higher score than j)
+    y_true = (y_true[:, None] < y_true[None, :]).float()
+    
+    y_pred = F.normalize(y_pred, p=2, dim=1)
+    # Cosine similarity between pairs (zigzag)
+    y_pred = torch.sum(y_pred[::2] * y_pred[1::2], dim=1) * tau
+    
+    # Pairwise difference of scores
+    y_pred = y_pred[:, None] - y_pred[None, :]
+    
+    # Mask out invalid comparisons
+    y_pred = (y_pred - (1 - y_true) * 1e12).view(-1)
+    
+    zero = torch.tensor([0.0], device=y_pred.device)
+    y_pred = torch.cat((zero, y_pred), dim=0)
+    return torch.logsumexp(y_pred, dim=0)
+
+
+def contrastive_with_negative_loss(
+    text: torch.Tensor,
+    pos: torch.Tensor,
+    neg: Optional[torch.Tensor] = None,
+    tau: float = 20.0
+) -> torch.Tensor:
+    """Compute contrastive loss with optional negatives."""
+    target = torch.cat((pos, neg), dim=0) if neg is not None else pos
+    q_norm = F.normalize(text, p=2, dim=1)
+    t_norm = F.normalize(target, p=2, dim=1)
+    scores = torch.mm(q_norm, t_norm.transpose(0, 1)) * tau
+    labels = torch.arange(len(scores), dtype=torch.long, device=scores.device)
+    return F.cross_entropy(scores, labels)
+
+
 def angle_loss(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,
@@ -72,26 +111,67 @@ def angle_loss(
     return torch.logsumexp(flat, dim=0).to(torch.float32)
 
 
-def supervised_contrastive_loss(
-    anchors: torch.Tensor,
-    positives: torch.Tensor,
-    scale: float = 20.0,
+def categorical_crossentropy_loss(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    from_logits: bool = True,
 ) -> torch.Tensor:
-    """InfoNCE-style supervised contrastive loss with anchors matched to positives."""
-    if anchors.shape != positives.shape:
-        raise ValueError("anchors and positives must share the same shape")
-    if anchors.dim() != 2:
-        raise ValueError("inputs must be 2D tensors [batch, dim]")
+    """Compute categorical crossentropy."""
+    if from_logits:
+        return -(F.log_softmax(y_pred, dim=1) * y_true).sum(dim=1)
+    return -(torch.log(y_pred, dim=1) * y_true).sum(dim=1)
 
-    batch_size = anchors.size(0)
-    if batch_size <= 1:
-        return anchors.new_tensor(0.0, dtype=torch.float32)
 
-    anchors_norm = F.normalize(anchors, p=2, dim=1)
-    positives_norm = F.normalize(positives, p=2, dim=1)
-    logits = anchors_norm @ positives_norm.T * scale
-    targets = torch.arange(batch_size, device=anchors.device)
-    return F.cross_entropy(logits, targets).to(torch.float32)
+def make_target_matrix(y_true: torch.Tensor) -> torch.Tensor:
+    """Construct the target matrix for in-batch negative loss."""
+    device = y_true.device
+    idxs = torch.arange(0, y_true.shape[0]).int().to(device)
+    y_true = y_true.int()
+    idxs_1 = idxs[None, :]
+    idxs_2 = (idxs + 1 - idxs % 2 * 2)[:, None]
+
+    # Expand y_true to match the shape requirements
+    y_true_row = y_true[None, :]  # shape: [1, batch_size]
+    y_true_col = y_true[:, None]  # shape: [batch_size, 1]
+
+    idxs_1 = idxs_1 * y_true_row
+    idxs_1 = idxs_1 + (y_true_row == 0).int() * -2
+
+    idxs_2 = idxs_2 * y_true_col
+    idxs_2 = idxs_2 + (y_true_col == 0).int() * -1
+
+    y_true = (idxs_1 == idxs_2).float()
+    return y_true
+
+
+def in_batch_negative_loss(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    tau: float = 20.0,
+    negative_weights: float = 0.0,
+) -> torch.Tensor:
+    """Compute in-batch negative loss (contrastive loss) matching official AnglE."""
+    device = y_true.device
+    
+    # y_true is zigzag [batch_size], e.g. [1, 1, 0, 0, ...]
+    # We need to reshape/process it to match the matrix construction logic
+    # The official code expects y_true to be the labels for the batch
+    
+    neg_mask = make_target_matrix(y_true == 0)
+    y_true_matrix = make_target_matrix(y_true)
+
+    # compute similarity
+    y_pred = F.normalize(y_pred, dim=1, p=2)
+    similarities = y_pred @ y_pred.T  # dot product
+    similarities = similarities - torch.eye(y_pred.shape[0]).to(device) * 1e12
+    similarities = similarities * tau
+
+    if negative_weights > 0:
+        similarities += neg_mask * negative_weights
+
+    return categorical_crossentropy_loss(
+        y_true_matrix, similarities, from_logits=True
+    ).mean()
 
 
 def aoe_total_loss(
@@ -103,11 +183,14 @@ def aoe_total_loss(
     w_cl: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Combine AnglE ranking loss with supervised contrastive loss."""
+    # y_true comes in as [batch, 1] or [batch], flatten it
+    y_true_flat = y_true.view(-1)
+    
     angle_term = angle_loss(y_true, y_pred, tau=angle_tau, pooling="sum")
 
-    anchors = y_pred[0::2]
-    positives = y_pred[1::2]
-    cl_term = supervised_contrastive_loss(anchors, positives, scale=cl_scale)
+    # Use the new in-batch negative loss
+    # Note: cl_scale corresponds to tau in the new function
+    cl_term = in_batch_negative_loss(y_true_flat, y_pred, tau=cl_scale)
 
     total = w_angle * angle_term + w_cl * cl_term
     stats = {

@@ -1,19 +1,50 @@
-"""Evaluation routines for running AoE checkpoints on STS datasets."""
+"""MTEB-based STS evaluation entry point for AoE checkpoints."""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
-from typing import List
+import pkgutil
+from importlib import import_module
+from pathlib import Path
+from typing import Iterable, Sequence
 
 import numpy as np
 import torch
-from scipy.stats import spearmanr
-from tqdm.auto import tqdm
+import torch.nn.functional as F
+from mteb import MTEB
 
-from aoe.data import load_gis_splits, load_sickr_split, load_stsb_splits
 from aoe.model import SentenceEncoder
+
+
+DEFAULT_TASKS = [
+    "STS12",
+    "STS13",
+    "STS14",
+    "STS15",
+    "STS16",
+    "STSBenchmark",
+    "SICK-R",
+]
+
+TASK_IMPORTS = {
+    "sts12": ("mteb.tasks.STS.STS12", "STS12"),
+    "sts13": ("mteb.tasks.STS.STS13", "STS13"),
+    "sts14": ("mteb.tasks.STS.STS14", "STS14"),
+    "sts15": ("mteb.tasks.STS.STS15", "STS15"),
+    "sts16": ("mteb.tasks.STS.STS16", "STS16"),
+    "stsbenchmark": ("mteb.tasks.STS.STSBenchmark", "STSBenchmark"),
+    "sick-r": ("mteb.tasks.STS.SICKR", "SICKR"),
+    "sickr": ("mteb.tasks.STS.SICKR", "SICKR"),
+}
+TASK_ALIASES = {
+    "stsb": "stsbenchmark",
+    "sts-b": "stsbenchmark",
+    "sickr": "sickr",
+    "sick-r": "sickr",
+}
 
 
 def load_encoder_from_ckpt(ckpt: str, model_cache: str | None = None) -> SentenceEncoder:
@@ -28,153 +59,298 @@ def load_encoder_from_ckpt(ckpt: str, model_cache: str | None = None) -> Sentenc
     return encoder
 
 
-def _encode_texts(
-    encoder: SentenceEncoder,
-    texts: List[str],
-    device: torch.device,
-    max_length: int,
-    batch_size: int = 64,
-) -> torch.Tensor:
-    """Encode a list of texts into real-valued sentence embeddings."""
+def _ensure_data_cache(root_dir: str) -> None:
+    """Route all HuggingFace/MTEB caches into the provided repository-local folder."""
 
-    chunks = []
-    iterator = range(0, len(texts), batch_size)
-    for start in tqdm(iterator, desc="Encoding", leave=False):
-        batch = texts[start : start + batch_size]
-        encoded = encoder.encode(batch, device=device, max_length=max_length)
-        if isinstance(encoded, tuple):
-            encoded = torch.cat(encoded, dim=-1)
-        chunks.append(encoded.detach().cpu())
-    return torch.cat(chunks, dim=0)
+    base = Path(root_dir).expanduser().resolve()
+    base.mkdir(parents=True, exist_ok=True)
+
+    datasets_cache = base / "hf_datasets"
+    hub_cache = base / "hf_hub"
+    models_cache = base / "hf_models"
+    home_cache = base / "hf_home"
+
+    for path in (datasets_cache, hub_cache, models_cache, home_cache):
+        path.mkdir(parents=True, exist_ok=True)
+
+    os.environ.setdefault("HF_HOME", str(home_cache))
+    os.environ.setdefault("HF_DATASETS_CACHE", str(datasets_cache))
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hub_cache))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(models_cache))
 
 
-def _prepare_dataset(dataset_name: str, cache_dir: str | None, stsb_split: str = "validation"):
-    """Return sentence pairs and scores for the requested dataset name."""
+def _parse_list_argument(raw: str | None, fallback: Iterable[str]) -> list[str]:
+    if raw is None or not raw.strip():
+        return list(fallback)
+    entries = [item.strip() for item in raw.split(",") if item.strip()]
+    return entries or list(fallback)
 
-    if dataset_name == "stsb":
-        splits = load_stsb_splits(cache_dir=cache_dir)
-        split_key = (stsb_split or "validation").lower()
-        dataset = splits.get(split_key)
-        if dataset is None:
-            raise ValueError(f"STS-B split '{split_key}' unavailable")
-    elif dataset_name == "gis":
-        splits = load_gis_splits(cache_dir=cache_dir)
-        dataset = splits.get("test") or splits.get("validation") or splits.get("train")
-        if dataset is None:
-            raise ValueError("GIS dataset does not expose usable splits")
-    elif dataset_name == "sickr":
-        dataset = load_sickr_split(cache_dir=cache_dir)
-    else:
-        raise ValueError(f"Unknown dataset '{dataset_name}'")
 
-    s1, s2, scores = [], [], []
-    for example in dataset:
-        sent1 = example.get("text1")
-        sent2 = example.get("text2")
-        score = example.get("score")
-        if sent1 is None or sent2 is None or score is None:
+def _normalize_task_name(name: str) -> str:
+    return name.replace("-", "").replace("_", "").lower()
+
+
+def _discover_mteb_task_classes() -> dict[str, type]:
+    """Search the installed mteb package for task classes keyed by normalized name."""
+    try:
+        import mteb.tasks as tasks_pkg
+    except Exception as exc:  # pragma: no cover - defensive guard for missing installs
+        raise ImportError("mteb is not installed or cannot be imported") from exc
+
+    discovered: dict[str, type] = {}
+    prefix = tasks_pkg.__name__ + "."
+    for module_info in pkgutil.walk_packages(tasks_pkg.__path__, prefix):
+        try:
+            module = import_module(module_info.name)
+        except Exception:
+            # Some optional-task modules may fail to import because of missing deps.
             continue
-        score_val = float(score)
-        if dataset_name == "stsb" and score_val < 0:
+        for attr in dir(module):
+            obj = getattr(module, attr)
+            if not isinstance(obj, type):
+                continue
+            meta = getattr(obj, "metadata", None)
+            if meta is None:
+                continue
+            meta_name = getattr(meta, "name", None)
+            if not isinstance(meta_name, str):
+                continue
+            discovered[_normalize_task_name(meta_name)] = obj
+    return discovered
+
+
+def _import_task_class(module_name: str, class_name: str):
+    try:
+        module = import_module(module_name)
+        return getattr(module, class_name)
+    except Exception:
+        return None
+
+
+def _instantiate_mteb_tasks(task_names: Sequence[str]):
+    discovered: dict[str, type] | None = None
+    available_keys: set[str] = set()
+    tasks = []
+    for name in task_names:
+        key = _normalize_task_name(name)
+        if not key:
             continue
-        s1.append(str(sent1))
-        s2.append(str(sent2))
-        scores.append(score_val)
+        key = TASK_ALIASES.get(key, key)
 
-    if not s1:
-        raise ValueError(f"Dataset '{dataset_name}' produced zero scored examples")
-    return s1, s2, np.asarray(scores, dtype=np.float32)
+        # Prefer legacy hardcoded paths for older mteb versions.
+        task_cls = None
+        target = TASK_IMPORTS.get(key)
+        if target is not None:
+            module_name, class_name = target
+            task_cls = _import_task_class(module_name, class_name)
+
+        # Fallback: dynamically discover tasks shipped with the installed mteb.
+        if task_cls is None:
+            if discovered is None:
+                discovered = _discover_mteb_task_classes()
+                available_keys = set(discovered.keys())
+            task_cls = discovered.get(key)
+
+        if task_cls is None:
+            known = sorted(available_keys or set(TASK_IMPORTS.keys()))
+            raise ValueError(f"Task '{name}' is not supported by the installed mteb. Known: {known}")
+
+        tasks.append(task_cls())
+
+    if not tasks:
+        raise ValueError("No valid MTEB tasks specified")
+    return tasks
 
 
-def eval_dataset(
-    encoder: SentenceEncoder,
-    dataset_name: str,
-    device: torch.device,
-    max_length: int,
-    data_cache: str | None,
-    stsb_split: str = "validation",
-) -> float:
-    """Evaluate a checkpoint on a dataset and return Spearman correlation."""
+def _materialize_sentences(sentences: Iterable[str] | Sequence[str]) -> list[str]:
+    """Allow non-subscriptable iterables (e.g., DataLoader) and coerce to List[str]."""
 
-    encoder.eval()
-    sentences1, sentences2, gold_scores = _prepare_dataset(
-        dataset_name,
-        data_cache,
-        stsb_split=stsb_split,
-    )
+    def _collect(obj) -> list[str]:
+        if obj is None:
+            return []
+        if isinstance(obj, str):
+            return [obj]
+        # numpy scalar strings (e.g., np.str_) are not instances of str
+        if hasattr(obj, "item") and not isinstance(obj, (list, tuple, dict)):
+            try:
+                return [str(obj.item())]
+            except Exception:
+                pass
+        if isinstance(obj, dict):
+            # Prefer common text fields; fall back to the first value.
+            for key in ("text", "texts", "sentence", "sentences", "sentence1"):
+                if key in obj:
+                    return _collect(obj[key])
+            if "sentence2" in obj:
+                return _collect(obj["sentence2"])
+            if obj:
+                return _collect(next(iter(obj.values())))
+            return []
+        if isinstance(obj, (list, tuple, set)):
+            out: list[str] = []
+            for entry in obj:
+                out.extend(_collect(entry))
+            return out
+        try:
+            # torch/numpy arrays, generators, DataLoader, etc.
+            return _collect(list(obj))
+        except Exception:
+            return [str(obj)]
 
-    emb1 = _encode_texts(encoder, sentences1, device=device, max_length=max_length)
-    emb2 = _encode_texts(encoder, sentences2, device=device, max_length=max_length)
+    collected = _collect(sentences)
+    return [str(x) for x in collected]
 
-    dot = (emb1 * emb2).sum(dim=1)
-    norms = emb1.norm(dim=1) * emb2.norm(dim=1)
-    cosine_sim = (dot / norms.clamp(min=1e-8)).numpy()
 
-    correlation = spearmanr(cosine_sim, gold_scores).correlation
-    if correlation is None or np.isnan(correlation):
-        raise ValueError(f"Spearman correlation undefined for dataset '{dataset_name}'")
-    return float(correlation)
+def _to_jsonable(obj):
+    """Convert MTEB TaskResult objects (and nested structures) into JSON-friendly data."""
+
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, np.generic):
+        try:
+            return obj.item()
+        except Exception:
+            pass
+    if dataclasses.is_dataclass(obj):
+        return _to_jsonable(dataclasses.asdict(obj))
+    if hasattr(obj, "to_dict"):
+        try:
+            return _to_jsonable(obj.to_dict())
+        except Exception:
+            pass
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(x) for x in obj]
+    return str(obj)
+
+
+class AoEMTEBModel:
+    """Adapter that exposes AoE encoders through the interface expected by MTEB."""
+
+    def __init__(
+        self,
+        encoder: SentenceEncoder,
+        device: torch.device,
+        max_length: int,
+        batch_size: int,
+        normalize: bool,
+    ) -> None:
+        self.encoder = encoder
+        self.device = device
+        self.max_length = max_length
+        self.batch_size = batch_size
+        self.normalize = normalize
+
+    @torch.no_grad()
+    def encode(
+        self,
+        sentences: Sequence[str],
+        batch_size: int | None = None,
+        show_progress_bar: bool = False,
+        **_: object,
+    ) -> np.ndarray:
+        sentences = _materialize_sentences(sentences)
+        if not sentences:
+            return np.zeros((0, 1), dtype=np.float32)
+
+        bs = batch_size or self.batch_size
+        chunks = []
+        iterator = range(0, len(sentences), bs)
+        for start in iterator:
+            batch = sentences[start : start + bs]
+            encoded = self.encoder.encode(
+                batch,
+                device=self.device,
+                max_length=self.max_length,
+            )
+            if isinstance(encoded, tuple):
+                encoded = torch.cat(encoded, dim=-1)
+            if self.normalize:
+                encoded = F.normalize(encoded, p=2, dim=-1)
+            chunks.append(encoded.detach().cpu().numpy())
+
+        return np.concatenate(chunks, axis=0)
 
 
 def main() -> None:
-    """CLI entry point for STS-style evaluation using saved checkpoints."""
-    parser = argparse.ArgumentParser(description="Evaluate AoE checkpoints on STS datasets")
+    """CLI entry point for MTEB STS evaluation using AoE checkpoints."""
+
+    parser = argparse.ArgumentParser(description="Run MTEB STS tasks with an AoE checkpoint")
     parser.add_argument("--ckpt", required=True, help="Path to checkpoint directory")
     parser.add_argument(
-        "--datasets",
-        required=True,
-        help="Comma-separated list of datasets (stsb,gis,sickr,sts_all)",
+        "--tasks",
+        default=",".join(DEFAULT_TASKS),
+        help="Comma-separated list of MTEB task names (default: STS suite)",
     )
     parser.add_argument("--max_length", type=int, default=128)
-    parser.add_argument("--data_cache", default="data")
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument(
+        "--data_cache",
+        default="data",
+        help="Directory where HuggingFace datasets/models will be cached",
+    )
     parser.add_argument("--model_cache", default="models")
     parser.add_argument(
-        "--stsb_split",
-        default="validation",
-        help="STS-B split to evaluate (validation by default since test lacks labels)",
+        "--results_dir",
+        default="output/mteb",
+        help="Where to store detailed MTEB outputs",
+    )
+    parser.add_argument(
+        "--eval_splits",
+        default="test",
+        help="Comma-separated list of splits to evaluate (default: test)",
+    )
+    parser.add_argument(
+        "--model_name",
+        default=None,
+        help="Identifier for this checkpoint in MTEB outputs (default: ckpt folder name)",
+    )
+    parser.add_argument(
+        "--no_l2_norm",
+        action="store_true",
+        help="Disable L2 normalization of embeddings before similarity (defaults to on)",
     )
     args = parser.parse_args()
+
+    _ensure_data_cache(args.data_cache)
 
     encoder = load_encoder_from_ckpt(args.ckpt, model_cache=args.model_cache)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     encoder.to(device)
 
-    requested = [name.strip().lower() for name in args.datasets.split(",") if name.strip()]
-    if not requested:
-        raise ValueError("At least one dataset must be specified")
+    tasks = _parse_list_argument(args.tasks, DEFAULT_TASKS)
+    splits = _parse_list_argument(args.eval_splits, ["test"])
 
-    if "sts_all" in requested:
-        requested = [name for name in requested if name != "sts_all"]
-        for candidate in ["stsb", "gis", "sickr"]:
-            if candidate not in requested:
-                requested.append(candidate)
+    model_name = args.model_name or Path(args.ckpt).resolve().name
 
-    results = {}
-    for dataset_name in tqdm(requested, desc="Datasets"):
-        try:
-            score = eval_dataset(
-                encoder,
-                dataset_name,
-                device=device,
-                max_length=args.max_length,
-                data_cache=args.data_cache,
-                stsb_split=args.stsb_split,
-            )
-        except NotImplementedError:
-            print(f"Dataset '{dataset_name}' is not implemented; skipping.")
-            continue
-        except ValueError as exc:
-            print(f"Skipping dataset '{dataset_name}': {exc}")
-            continue
+    adapter = AoEMTEBModel(
+        encoder=encoder,
+        device=device,
+        max_length=args.max_length,
+        batch_size=args.batch_size,
+        normalize=not args.no_l2_norm,
+    )
+    task_objects = _instantiate_mteb_tasks(tasks)
+    suite = MTEB(tasks=task_objects)
+    results_dir = Path(args.results_dir) / model_name
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-        results[dataset_name] = score
-        print(f"Dataset: {dataset_name}, Spearman: {score:.4f}")
+    results = suite.run(
+        adapter,
+        eval_splits=splits,
+        output_folder=str(results_dir),
+        model_name=model_name,
+        overwrite_results=True,  # ensure every task reruns for this checkpoint
+    )
+    results_jsonable = _to_jsonable(results)
 
-    if results:
-        avg = sum(results.values()) / len(results)
-        print(f"Average Spearman: {avg:.4f}")
-    else:
-        print("No datasets were evaluated successfully.")
+    summary_path = results_dir / "summary.json"
+    with summary_path.open("w", encoding="utf-8") as fp:
+        json.dump(results_jsonable, fp, indent=2, ensure_ascii=False)
+
+    print(f"MTEB results saved to {summary_path}")
+    print(json.dumps(results_jsonable, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

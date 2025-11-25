@@ -3,7 +3,164 @@
 import random
 from typing import Dict, List, Optional
 
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
+
+import torch
 from datasets import Dataset, concatenate_datasets, load_dataset
+from transformers import PreTrainedTokenizerBase
+from transformers.utils import PaddingStrategy
+
+
+class Prompts:
+    """Predefined prompts for AoE tasks."""
+
+    A = 'Summarize sentence "{text}" in one word:"'
+    B = 'You can only output one word. Summarize "{text}":"'
+    C = "Represent this sentence for searching relevant passages: {text}"
+
+    @classmethod
+    def list_prompts(cls):
+        for key, val in cls.__dict__.items():
+            if key.startswith("_") or key == "list_prompts":
+                continue
+            print(f"Prompts.{key}", "=", f"'{val}'")
+
+
+@dataclass
+class AngleDataCollator:
+    """
+    Collator that handles raw data, tokenizes it, and prepares batches.
+    Matches official AnglE implementation.
+    """
+
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str, PaddingStrategy] = "longest"
+    max_length: Optional[int] = None
+    return_tensors: str = "pt"
+    filter_duplicate: bool = True
+    text_prompt: Optional[str] = None
+    query_prompt: Optional[str] = None
+    doc_prompt: Optional[str] = None
+    dataset_format: Optional[str] = None
+
+    @staticmethod
+    def sample_from_list(text: Union[str, List[str]]) -> str:
+        if isinstance(text, list):
+            return random.choice(text)
+        return text
+
+    def __call__(self, features: List[Dict], return_tensors: str = "pt") -> Dict[str, torch.Tensor]:
+        if return_tensors is None:
+            return_tensors = self.return_tensors
+
+        # Auto-detect dataset format from first sample if not specified
+        if self.dataset_format is None:
+            sample = features[0]
+            if "text1" in sample and "text2" in sample and "score" in sample:
+                self.dataset_format = "A"  # Modified from 'label' to 'score' to match our internal format
+            elif "text1" in sample and "text2" in sample and "label" in sample:
+                 self.dataset_format = "A"
+            elif "query" in sample and "positive" in sample and "negative" in sample:
+                self.dataset_format = "C"
+            elif "query" in sample and "positive" in sample:
+                self.dataset_format = "B"
+            else:
+                # Fallback for our specific AnglePairDataset which uses text1, text2, score
+                if "text1" in sample and "text2" in sample:
+                     self.dataset_format = "A"
+                else:
+                    raise NotImplementedError("Unable to detect dataset format")
+
+        # Optimization: Collect all texts first to use batch tokenization
+        # This avoids the "tokenization followed by pad" warning from BertTokenizerFast
+        # and significantly improves performance by reducing Python overhead.
+        all_texts: List[str] = []
+        all_labels: List[float] = []
+
+        for feature in features:
+            texts = []
+            label = -1.0
+
+            if self.dataset_format == "A":
+                text1 = self.sample_from_list(feature.get("text1", feature.get("text_1")))
+                text2 = self.sample_from_list(feature.get("text2", feature.get("text_2")))
+                # Handle score/label
+                val = feature.get("score", feature.get("label"))
+                if val is not None:
+                    label = float(val)
+
+                if self.text_prompt is not None:
+                    text1 = self.text_prompt.format(text=text1)
+                    text2 = self.text_prompt.format(text=text2)
+                texts = [text1, text2]
+
+            elif self.dataset_format == "B":
+                query = self.sample_from_list(feature["query"])
+                positive = self.sample_from_list(feature["positive"])
+                if self.query_prompt is not None:
+                    query = self.query_prompt.format(text=query)
+                if self.doc_prompt is not None:
+                    positive = self.doc_prompt.format(text=positive)
+                texts = [query, positive]
+
+            elif self.dataset_format == "C":
+                query = self.sample_from_list(feature["query"])
+                positive = self.sample_from_list(feature["positive"])
+                negative = self.sample_from_list(feature["negative"])
+                if self.query_prompt is not None:
+                    query = self.query_prompt.format(text=query)
+                if self.doc_prompt is not None:
+                    positive = self.doc_prompt.format(text=positive)
+                    negative = self.doc_prompt.format(text=negative)
+                texts = [query, positive, negative]
+
+            # Collect texts and replicate label for each text in the pair/triplet
+            all_texts.extend(texts)
+            all_labels.extend([label] * len(texts))
+
+        if not all_texts:
+             raise ValueError("No features to process (empty input)")
+
+        # Batch tokenize all texts at once
+        # padding=self.padding (default 'longest') ensures efficient padding within the batch
+        batch = self.tokenizer(
+            all_texts,
+            padding=self.padding,
+            max_length=self.max_length,
+            truncation=True,
+            return_tensors=return_tensors,
+        )
+
+        # Filter duplicates if requested
+        # We filter based on input_ids to ensure uniqueness at the token level
+        if self.filter_duplicate:
+            unique_indices = []
+            seen = set()
+            input_ids = batch["input_ids"]
+            
+            # Iterate and find unique indices
+            for idx, row in enumerate(input_ids):
+                # Convert to tuple for hashing. 
+                # Note: This is necessary for set lookup.
+                row_tuple = tuple(row.tolist())
+                if row_tuple not in seen:
+                    seen.add(row_tuple)
+                    unique_indices.append(idx)
+            
+            # If duplicates were found, slice the batch and labels
+            if len(unique_indices) < len(all_texts):
+                # Slice all tensor fields in the batch (input_ids, attention_mask, etc.)
+                for key in batch:
+                    batch[key] = batch[key][unique_indices]
+                
+                # Slice labels
+                all_labels = [all_labels[i] for i in unique_indices]
+
+        # Attach labels to the batch
+        batch["labels"] = torch.tensor(all_labels, dtype=torch.float)
+        
+        return batch
 
 
 def _pick_field(example: Dict[str, object], candidates: tuple[str, ...], default: object) -> object:
@@ -76,14 +233,13 @@ def load_stsb_splits(cache_dir: Optional[str] = "data") -> Dict[str, Dataset]:
 
 
 def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
-    """Load the SICK-R dataset (validation split) with normalized field names."""
+    """Load the SICK-R dataset (using mteb/sickr-sts which contains all data in 'test' split)."""
 
     try:
         ds = load_dataset(
-            "sick",
-            split="validation",
+            "mteb/sickr-sts",
+            split="test",
             cache_dir=cache_dir,
-            trust_remote_code=True,
         )
     except Exception as exc:  # pragma: no cover - dataset availability guard
         raise NotImplementedError(
@@ -91,6 +247,8 @@ def load_sickr_split(cache_dir: Optional[str] = "data") -> Dataset:
         ) from exc
 
     rename_map = {
+        "sentence1": "text1",
+        "sentence2": "text2",
         "sentence_A": "text1",
         "sentence_B": "text2",
         "relatedness_score": "score",
