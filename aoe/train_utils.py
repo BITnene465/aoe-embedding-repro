@@ -109,6 +109,7 @@ def train_epoch(
     cl_scale: float,
     w_angle: float,
     w_cl: float,
+    w_cosine: float,
     max_length: int,
     epoch_idx: int,
     total_epochs: int,
@@ -121,6 +122,7 @@ def train_epoch(
     # grad_accum_steps is handled by accelerator.accumulate
     angle_total = 0.0
     contrast_total = 0.0
+    cosine_total = 0.0
     loss_total = 0.0
     steps = 0
     
@@ -168,6 +170,7 @@ def train_epoch(
                 cl_scale=cl_scale,
                 w_angle=w_angle,
                 w_cl=w_cl,
+                w_cosine=w_cosine,
             )
             
             # No manual scaling needed with accelerator.backward if we don't use mean reduction?
@@ -184,6 +187,7 @@ def train_epoch(
             # Accumulate stats (these are floats, not tensors)
             angle_total += stats["angle_loss"]
             contrast_total += stats["contrastive_loss"]
+            cosine_total += stats["cosine_loss"]
             loss_total += stats["total_loss"]
 
             if on_batch_end is not None:
@@ -193,6 +197,7 @@ def train_epoch(
                         "batch": steps,
                         "train_angle": stats["angle_loss"],
                         "train_contrast": stats["contrastive_loss"],
+                        "train_cosine": stats["cosine_loss"],
                         "train_total": stats["total_loss"],
                     }
                 )
@@ -202,13 +207,14 @@ def train_epoch(
                     loss=f"{stats['total_loss']:.4f}",
                     angle=f"{stats['angle_loss']:.4f}",
                     contrast=f"{stats['contrastive_loss']:.4f}",
+                    cosine=f"{stats['cosine_loss']:.4f}",
                 )
 
     if show_progress and hasattr(iterator, "close"):
         iterator.close()
 
     denom = max(steps, 1)
-    return angle_total / denom, contrast_total / denom, loss_total / denom, steps
+    return angle_total / denom, contrast_total / denom, cosine_total / denom, loss_total / denom, steps
 
 
 @torch.no_grad()
@@ -220,6 +226,7 @@ def evaluate_epoch(
     cl_scale: float,
     w_angle: float,
     w_cl: float,
+    w_cosine: float,
     max_length: int,
     show_progress: bool = False,
     on_batch_end: Optional[Callable[[dict], None]] = None,
@@ -227,6 +234,7 @@ def evaluate_epoch(
     encoder.eval()
     angle_total = 0.0
     contrast_total = 0.0
+    cosine_total = 0.0
     loss_total = 0.0
     steps = 0
 
@@ -260,9 +268,11 @@ def evaluate_epoch(
             cl_scale=cl_scale,
             w_angle=w_angle,
             w_cl=w_cl,
+            w_cosine=w_cosine,
         )
         angle_total += stats["angle_loss"]
         contrast_total += stats["contrastive_loss"]
+        cosine_total += stats["cosine_loss"]
         loss_total += stats["total_loss"]
 
         if on_batch_end is not None:
@@ -271,6 +281,7 @@ def evaluate_epoch(
                     "batch": steps,
                     "eval_angle": stats["angle_loss"],
                     "eval_contrast": stats["contrastive_loss"],
+                    "eval_cosine": stats["cosine_loss"],
                     "eval_total": stats["total_loss"],
                 }
             )
@@ -280,13 +291,14 @@ def evaluate_epoch(
                 loss=f"{stats['total_loss']:.4f}",
                 angle=f"{stats['angle_loss']:.4f}",
                 contrast=f"{stats['contrastive_loss']:.4f}",
+                cosine=f"{stats['cosine_loss']:.4f}",
             )
 
     if show_progress and hasattr(iterator, "close"):
         iterator.close()
 
     denom = max(steps, 1)
-    return angle_total / denom, contrast_total / denom, loss_total / denom, steps
+    return angle_total / denom, contrast_total / denom, cosine_total / denom, loss_total / denom, steps
 
 
 def resolve_metrics_path(default_path: str, override: Optional[str]) -> Optional[str]:
@@ -330,6 +342,7 @@ class TrainConfig:
     cl_scale: float
     w_angle: float
     w_cl: float
+    w_cosine: float
     output_dir: str
     run_name: str
     data_cache: Optional[str]
@@ -360,6 +373,7 @@ class TrainConfig:
             cl_scale=getattr(args, "cl_scale"),
             w_angle=getattr(args, "w_angle"),
             w_cl=getattr(args, "w_cl"),
+            w_cosine=getattr(args, "w_cosine", 0.0),
             output_dir=getattr(args, "output_dir"),
             run_name=getattr(args, "run_name", "default"),
             data_cache=getattr(args, "data_cache", None),

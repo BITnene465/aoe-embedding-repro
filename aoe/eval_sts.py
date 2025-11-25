@@ -36,15 +36,37 @@ TASK_IMPORTS = {
     "sts15": ("mteb.tasks.STS.STS15", "STS15"),
     "sts16": ("mteb.tasks.STS.STS16", "STS16"),
     "stsbenchmark": ("mteb.tasks.STS.STSBenchmark", "STSBenchmark"),
-    "sick-r": ("mteb.tasks.STS.SICKR", "SICKR"),
     "sickr": ("mteb.tasks.STS.SICKR", "SICKR"),
+    "sick-r": ("mteb.tasks.STS.SICKR", "SICKR"),
 }
 TASK_ALIASES = {
     "stsb": "stsbenchmark",
     "sts-b": "stsbenchmark",
     "sickr": "sickr",
     "sick-r": "sickr",
+    "gis": "gis",   # 这个在本地评估
 }
+
+from mteb.abstasks import AbsTaskSTS
+from aoe.data import load_gis_splits
+
+class GISTask(AbsTaskSTS):
+    metadata = dict(
+        name="GIS",
+        description="GitHub Issue Similarity",
+        reference=None,
+        type="STS",
+        category="s2s",
+        eval_splits=["test"],
+        eval_langs=["en"],
+        main_score="cosine_spearman",
+    )
+    
+    # Allow configuring cache_dir externally
+    data_cache_dir = "data"
+
+    def load_data(self, **kwargs):
+        self.dataset = load_gis_splits(cache_dir=self.data_cache_dir)
 
 
 def load_encoder_from_ckpt(ckpt: str, model_cache: str | None = None) -> SentenceEncoder:
@@ -54,7 +76,7 @@ def load_encoder_from_ckpt(ckpt: str, model_cache: str | None = None) -> Sentenc
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Expected checkpoint at {ckpt_path}")
 
-    encoder = torch.load(ckpt_path, map_location="cpu")
+    encoder = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     encoder.eval()
     return encoder
 
@@ -87,6 +109,8 @@ def _parse_list_argument(raw: str | None, fallback: Iterable[str]) -> list[str]:
     if raw is None or not raw.strip():
         return list(fallback)
     entries = [item.strip() for item in raw.split(",") if item.strip()]
+    if "all" in entries:
+        return list(DEFAULT_TASKS)
     return entries or list(fallback)
 
 
@@ -147,6 +171,9 @@ def _instantiate_mteb_tasks(task_names: Sequence[str]):
         if target is not None:
             module_name, class_name = target
             task_cls = _import_task_class(module_name, class_name)
+        
+        if key == "gis":
+            task_cls = GISTask
 
         # Fallback: dynamically discover tasks shipped with the installed mteb.
         if task_cls is None:
@@ -325,6 +352,9 @@ def main() -> None:
 
     tasks = _parse_list_argument(args.tasks, DEFAULT_TASKS)
     splits = _parse_list_argument(args.eval_splits, ["test"])
+
+    # Configure GIS task cache
+    GISTask.data_cache_dir = args.data_cache
 
     model_name = args.model_name or Path(args.ckpt).resolve().name
 

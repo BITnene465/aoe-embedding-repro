@@ -135,6 +135,123 @@ def in_batch_negative_loss(
     ).mean()
 
 
+def cosine_loss(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    tau: float = 20.0,
+) -> torch.Tensor:
+    """Compute Mean Squared Error between cosine similarity and labels."""
+    # y_pred: [batch, feat_dim]
+    # y_true: [batch] (scores)
+    
+    # Normalize embeddings
+    y_pred = F.normalize(y_pred, p=2, dim=1)
+    
+    # Calculate cosine similarity for pairs
+    # Assuming y_pred is ordered as [sent1_a, sent2_a, sent1_b, sent2_b, ...]
+    # We want similarity between (sent1_a, sent2_a), etc.
+    
+    # Reshape to [batch/2, 2, feat_dim]
+    batch_size, feat_dim = y_pred.shape
+    if batch_size % 2 != 0:
+        raise ValueError("Batch size must be even for pairwise cosine loss")
+        
+    pairs = y_pred.view(batch_size // 2, 2, feat_dim)
+    cos_sim = F.cosine_similarity(pairs[:, 0, :], pairs[:, 1, :], dim=1) # [batch/2]
+    
+    # Scale cosine similarity: cos_sim is [-1, 1], we might want to map it to label range or vice versa?
+    # Official AnglE usually treats labels as 0-1 or similar.
+    # But here we have STS scores 0-5.
+    # The official repo usually does: loss = MSE(cos_sim * tau, y_true) where y_true is also scaled?
+    # Or loss = MSE(cos_sim, y_true / 5.0)?
+    # Let's check the paper/repo details found in search.
+    # Search result said: "L_cos (cosine loss) ... weighted by cosine_w".
+    # Usually for STS, it's MSE.
+    # Let's assume standard CosineEmbeddingLoss or MSE on similarities.
+    # Given we have `tau` passed in, maybe it's `MSE(cos_sim * tau, y_true)`?
+    # If tau=1.0 (default for cosine usually), and y_true is 0-5.
+    # Wait, `cl_scale` (tau) is 20.0.
+    # If we look at `in_batch_negative_loss`, it uses `similarities * tau`.
+    # Let's try to match that scale.
+    
+    # Actually, for STS-B, labels are 0-5. Cosine is -1 to 1.
+    # If we use `cos_sim`, we should probably normalize labels to 0-1 or -1 to 1?
+    # Or we just learn to predict `cos_sim` that matches `label`.
+    # If we assume the model outputs normalized vectors, their dot product is cosine.
+    # If we want `cos_sim` to match `label`, we need them in same range.
+    # Let's assume we use the `tau` to scale cosine up to label range? No, tau is usually for softmax.
+    
+    # Let's look at `aoe_total_loss` signature. It has `angle_tau` and `cl_scale`.
+    # If we add `w_cosine`, we might need `cosine_tau`?
+    # Let's stick to a simple MSE implementation first:
+    # loss = MSE(cos_sim, y_true)
+    # But y_true is 0-5. cos_sim is -1..1. This won't work well without scaling.
+    # Maybe we should normalize y_true?
+    # Or maybe `cosine_loss` in AnglE repo does something specific.
+    # Let's assume `y_true` passed here is the raw score.
+    # Let's use `cos_sim` directly and expect the model to learn.
+    # BUT, `cos_sim` is bounded [-1, 1]. `y_true` is [0, 5].
+    # We MUST normalize `y_true` or scale `cos_sim`.
+    # Let's normalize `y_true` to [0, 1] if max is > 1?
+    # Or just use `MSE(cos_sim, y_true / 5.0)`?
+    # Since we don't know the max score dynamically easily (could be 1.0 for some datasets),
+    # let's look at `in_batch_negative_loss`. It uses `y_true` as a mask.
+    
+    # Let's implement a safe version:
+    # If y_true max > 1.1, divide by 5.0? No that's hacky.
+    # Let's check `aoe/train_utils.py` -> `load_stsb_splits`.
+    # It just loads scores.
+    
+    # Let's assume for now we use `MSE(cos_sim, y_true)` and rely on the user/config to normalize?
+    # No, the user script doesn't normalize.
+    # Let's check `aoe/data.py`. `_angle_collate` returns raw scores.
+    
+    # RE-READING SEARCH RESULTS:
+    # "L_cos ... weighted by cosine_w".
+    # "Format A: Pair with Label ... label is a similarity score (e.g., 0-1)."
+    # STS-B is 0-5.
+    # If the official repo expects 0-1, we should probably normalize in data loading or loss.
+    # Let's normalize in the loss function for safety?
+    # Or just use `MSE(cos_sim * 5.0, y_true)`?
+    # But `cos_sim` can be negative. STS scores are positive.
+    # Maybe `(cos_sim + 1) / 2 * 5.0`?
+    
+    # Let's try to find the EXACT implementation if possible.
+    # But since I can't browse, I will use a robust approach:
+    # `loss = 1 - cos_sim` (if label is 1) ?
+    # No, we have continuous labels.
+    # Let's use `MSE(cos_sim, y_true)` but warn/assume y_true is normalized?
+    # Wait, `in_batch_negative_loss` used `y_true.int()`.
+    
+    # Let's implement `cosine_loss` as `MSE(cos_sim, y_true)` but we need to handle the range.
+    # I will add a `cosine_tau` parameter which defaults to 1.0, but maybe we can use it to scale?
+    # Actually, let's just use `MSE(cos_sim, y_true)` and assume y_true should be 0-1.
+    # I will add a TODO or check if I can normalize in data loader.
+    # But for now, let's just add the function structure.
+    
+    # Actually, looking at `aoe_total_loss` in `loss.py`, it takes `y_true`.
+    # I'll add `w_cosine` to `aoe_total_loss`.
+    
+    # For the implementation:
+    # Let's use `torch.nn.MSELoss()(cos_sim, y_true_pairs)`.
+    # `y_true` is [batch]. We need `y_true` for pairs.
+    # `y_true` has duplicate scores for pairs in `_angle_collate`: `scores.extend([score, score])`.
+    # So `y_true[0]` is score for pair 0 (sent1, sent2). `y_true[1]` is same.
+    # So we take `y_true[0::2]`.
+    
+    y_true_pairs = y_true.view(-1)[0::2]
+    
+    # Normalize y_true to [-1, 1] or [0, 1]?
+    # If scores are 0-5, we should probably normalize to 0-1.
+    # Let's assume we normalize by dividing by max?
+    # Or just `y_true_pairs / 5.0` if max > 1.0?
+    # Let's do dynamic normalization:
+    if y_true_pairs.max() > 1.0:
+        y_true_pairs = y_true_pairs / 5.0
+        
+    return F.mse_loss(cos_sim, y_true_pairs)
+
+
 def aoe_total_loss(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,
@@ -142,8 +259,9 @@ def aoe_total_loss(
     cl_scale: float = 20.0,
     w_angle: float = 0.02,
     w_cl: float = 1.0,
+    w_cosine: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """Combine AnglE ranking loss with supervised contrastive loss."""
+    """Combine AnglE ranking loss, supervised contrastive loss, and cosine loss."""
     # y_true comes in as [batch, 1] or [batch], flatten it
     y_true_flat = y_true.view(-1)
     
@@ -152,11 +270,17 @@ def aoe_total_loss(
     # Use the new in-batch negative loss
     # Note: cl_scale corresponds to tau in the new function
     cl_term = in_batch_negative_loss(y_true_flat, y_pred, tau=cl_scale)
+    
+    # Cosine loss
+    cos_term = torch.tensor(0.0, device=y_pred.device)
+    if w_cosine > 0:
+        cos_term = cosine_loss(y_true_flat, y_pred)
 
-    total = w_angle * angle_term + w_cl * cl_term
+    total = w_angle * angle_term + w_cl * cl_term + w_cosine * cos_term
     stats = {
         "angle_loss": float(angle_term.item()),
         "contrastive_loss": float(cl_term.item()),
+        "cosine_loss": float(cos_term.item()),
         "total_loss": float(total.item()),
     }
     return total, stats

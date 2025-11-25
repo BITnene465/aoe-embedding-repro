@@ -12,7 +12,7 @@ from transformers.utils import PaddingStrategy
 
 
 class Prompts:
-    """Predefined prompts for AoE tasks."""
+    """Predefined prompts for AoE tasks. Only for LLaMA backbone !!!"""
 
     A = 'Summarize sentence "{text}" in one word:"'
     B = 'You can only output one word. Summarize "{text}":"'
@@ -57,16 +57,16 @@ class AngleDataCollator:
         if self.dataset_format is None:
             sample = features[0]
             if "text1" in sample and "text2" in sample and "score" in sample:
-                self.dataset_format = "A"
+                self.dataset_format = "D" if self.text_prompt is None else "A"
             elif "text1" in sample and "text2" in sample and "label" in sample:
-                 self.dataset_format = "A"
+                 self.dataset_format = "D" if self.text_prompt is None else "A"
             elif "query" in sample and "positive" in sample and "negative" in sample:
                 self.dataset_format = "C"
             elif "query" in sample and "positive" in sample:
                 self.dataset_format = "B"
             else:
                 if "text1" in sample and "text2" in sample:
-                     self.dataset_format = "A"
+                     self.dataset_format = "D" if self.text_prompt is None else "A"
                 else:
                     raise NotImplementedError("Unable to detect dataset format")
 
@@ -108,6 +108,15 @@ class AngleDataCollator:
                     positive = self.doc_prompt.format(text=positive)
                     negative = self.doc_prompt.format(text=negative)
                 texts = [query, positive, negative]
+
+            elif self.dataset_format == "D":
+                # Format D: Raw text without prompts (for BERT etc.)
+                text1 = self.sample_from_list(feature.get("text1", feature.get("text_1")))
+                text2 = self.sample_from_list(feature.get("text2", feature.get("text_2")))
+                val = feature.get("score", feature.get("label"))
+                if val is not None:
+                    label = float(val)
+                texts = [text1, text2]
 
             all_texts.extend(texts)
             all_labels.extend([label] * len(texts))

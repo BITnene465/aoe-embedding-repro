@@ -75,6 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cl_scale", type=float, default=20.0)
     parser.add_argument("--w_angle", type=float, default=0.02)
     parser.add_argument("--w_cl", type=float, default=1.0)
+    parser.add_argument("--w_cosine", type=float, default=0.0)
     parser.add_argument("--output_dir", default="output")
     parser.add_argument("--run_name", default="default")
     parser.add_argument("--data_cache", default="data")
@@ -173,7 +174,7 @@ def main() -> None:
             ckpt_path = os.path.join(ckpt_path, "encoder.pt")
         if not os.path.exists(ckpt_path):
             raise FileNotFoundError(f"Init checkpoint '{ckpt_path}' is missing")
-        loaded: SentenceEncoder = torch.load(ckpt_path, map_location="cpu")
+        loaded: SentenceEncoder = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         encoder.load_state_dict(loaded.state_dict())
 
     # No manual .to(device), handled by accelerator.prepare
@@ -252,7 +253,7 @@ def main() -> None:
     angle_avg = contrast_avg = total_avg = 0.0
 
     for epoch in range(1, config.epochs + 1):
-        angle_avg, contrast_avg, total_avg, _ = train_epoch(
+        angle_avg, contrast_avg, cosine_avg, total_avg, _ = train_epoch(
             encoder,
             train_loader,
             optimizer,
@@ -261,6 +262,7 @@ def main() -> None:
             cl_scale=config.cl_scale,
             w_angle=config.w_angle,
             w_cl=config.w_cl,
+            w_cosine=config.w_cosine,
             max_length=config.max_length,
             epoch_idx=epoch,
             total_epochs=config.epochs,
@@ -270,9 +272,9 @@ def main() -> None:
             scheduler_step=scheduler.step if scheduler is not None else None,
         )
 
-        eval_angle = eval_contrast = eval_total = None
+        eval_angle = eval_contrast = eval_cosine = eval_total = None
         if eval_loader is not None:
-            eval_angle, eval_contrast, eval_total, _ = evaluate_epoch(
+            eval_angle, eval_contrast, eval_cosine, eval_total, _ = evaluate_epoch(
                 encoder,
                 eval_loader,
                 accelerator, # Pass accelerator for metric aggregation
@@ -280,6 +282,7 @@ def main() -> None:
                 cl_scale=config.cl_scale,
                 w_angle=config.w_angle,
                 w_cl=config.w_cl,
+                w_cosine=config.w_cosine,
                 max_length=config.max_length,
                 show_progress=(not config.no_progress_bar) and accelerator.is_main_process,
             )
@@ -288,12 +291,12 @@ def main() -> None:
         if accelerator.is_main_process:
             message = (
                 f"Epoch {epoch}: train_angle={angle_avg:.4f} train_contrast={contrast_avg:.4f} "
-                f"train_total={total_avg:.4f}"
+                f"train_cosine={cosine_avg:.4f} train_total={total_avg:.4f}"
             )
             if eval_total is not None:
                 message += (
                     f" | eval_angle={eval_angle:.4f} eval_contrast={eval_contrast:.4f}"
-                    f" eval_total={eval_total:.4f}"
+                    f" eval_cosine={eval_cosine:.4f} eval_total={eval_total:.4f}"
                 )
             print(message, flush=True)
 
@@ -304,6 +307,7 @@ def main() -> None:
                     "run_dir": run_dirs["run"],
                     "train_angle": angle_avg,
                     "train_contrast": contrast_avg,
+                    "train_cosine": cosine_avg,
                     "train_total": total_avg,
                 }
                 if eval_total is not None:
@@ -311,6 +315,7 @@ def main() -> None:
                         {
                             "eval_angle": eval_angle,
                             "eval_contrast": eval_contrast,
+                            "eval_cosine": eval_cosine,
                             "eval_total": eval_total,
                         }
                     )
