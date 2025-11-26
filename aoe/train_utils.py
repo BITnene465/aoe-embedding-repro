@@ -93,11 +93,7 @@ def _encode_zigzag(
     device: torch.device,
     max_length: int,
 ) -> torch.Tensor:
-    encoded = encoder.encode(texts, device=device, max_length=max_length)
-    if not isinstance(encoded, tuple):
-        raise ValueError("SentenceEncoder must run in complex_mode=True for AoE training")
-    z_re, z_im = encoded
-    return torch.cat([z_re, z_im], dim=1)
+    return encoder.encode(texts, device=device, max_length=max_length)
 
 
 def train_epoch(
@@ -145,12 +141,7 @@ def train_epoch(
                 attention_mask = batch["attention_mask"]
                 y_true = batch["labels"]
                 
-                encoded = encoder(input_ids, attention_mask)
-                if isinstance(encoded, tuple):
-                     z_re, z_im = encoded
-                     y_pred = torch.cat([z_re, z_im], dim=1)
-                else:
-                     y_pred = encoded
+                y_pred = encoder(input_ids, attention_mask, output_mlp=True)
             else:
                 texts, scores = batch
                 # For custom collate (list of strings), we might still need manual handling if not tensor
@@ -250,12 +241,7 @@ def evaluate_epoch(
             attention_mask = batch["attention_mask"]
             y_true = batch["labels"]
             
-            encoded = encoder(input_ids, attention_mask)
-            if isinstance(encoded, tuple):
-                 z_re, z_im = encoded
-                 y_pred = torch.cat([z_re, z_im], dim=1)
-            else:
-                 y_pred = encoded
+            y_pred = encoder(input_ids, attention_mask, output_mlp=True)
         else:
             texts, scores = batch
             y_true = scores

@@ -43,6 +43,7 @@ The core of AoE is training on NLI data using a combination of Contrastive Loss 
 - **Batch Size:** 512 (simulated via gradient accumulation if needed)
 - **Learning Rate:** 5e-5
 - **Pooling:** CLS
+- **Projection Head:** MLP (Linear-Tanh-Linear) during training; None during inference
 - **Angle Tau:** 20.0
 - **Contrastive Scale:** 20.0
 - **Angle Weight (`w_angle`):** 1.0 (for NLI)
@@ -123,9 +124,8 @@ bash scripts/finetune_task.sh
 **Evaluate**:
 ```bash
 CKPT=output/bert_gis_aoe_lab1/ckpt \
-TASKS=GIS \
 MODEL_NAME=bert_gis_indomain \
-bash scripts/eval_sts.sh
+bash scripts/eval_gis.sh
 ```
 
 ## 6. Downstream Experiments

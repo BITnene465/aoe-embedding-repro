@@ -233,13 +233,14 @@ def main() -> None:
         def batch_logger(payload: dict) -> None:
             nonlocal global_step
             global_step += 1
-            record = {
-                "type": "train_batch",
-                "global_step": global_step,
-                "run_dir": run_dirs["run"],
-            }
-            record.update(payload)
-            append_metrics(metrics_path, record)
+            if global_step % 10 == 0:
+                record = {
+                    "type": "train_batch",
+                    "global_step": global_step,
+                    "run_dir": run_dirs["run"],
+                }
+                record.update(payload)
+                append_metrics(metrics_path, record)
 
     writer: SummaryWriter | None = None
     tb_dir = resolve_tensorboard_dir(run_dirs["tensorboard_default"], config.tensorboard_dir)

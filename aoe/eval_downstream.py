@@ -14,33 +14,27 @@ import torch.nn.functional as F
 from mteb import MTEB
 
 from aoe.model import SentenceEncoder
-from aoe.eval_sts import (
+from aoe.eval_utils import (
     load_encoder_from_ckpt,
-    _ensure_data_cache,
-    _parse_list_argument,
-    _to_jsonable,
+    ensure_data_cache,
+    to_jsonable,
     AoEMTEBModel,
 )
+from aoe.eval_sts import _parse_list_argument
 
 # Downstream tasks from Table 3 of the paper
 DOWNSTREAM_TASKS = [
     "MR",
     "CR",
     "SUBJ",
-    "MPQA",
     "SST2",
-    "TREC",
-    "MRPC",
 ]
 
 TASK_IMPORTS = {
     "mr": ("mteb.tasks.Classification.MR", "MR"),
     "cr": ("mteb.tasks.Classification.CR", "CR"),
     "subj": ("mteb.tasks.Classification.SUBJ", "SUBJ"),
-    "mpqa": ("mteb.tasks.Classification.MPQA", "MPQA"),
     "sst2": ("mteb.tasks.Classification.SST2", "SST2"),
-    "trec": ("mteb.tasks.Classification.TREC", "TREC"),
-    "mrpc": ("mteb.tasks.Classification.MRPC", "MRPC"),
 }
 
 
@@ -53,15 +47,117 @@ def _import_task_class(module_name: str, class_name: str):
         return None
 
 
+from mteb import TaskMetadata
+from mteb.abstasks import AbsTaskClassification
+
+class MR(AbsTaskClassification):
+    metadata = TaskMetadata(
+        name="MR",
+        dataset={
+            "path": "rotten_tomatoes",
+            "revision": "main"
+        },
+        description="Movie Review Sentiment Classification",
+        type="Classification",
+        category="t2t",
+        eval_splits=["test"],
+        eval_langs=["eng-Latn"],
+        main_score="accuracy",
+        date=None,
+        domains=None,
+        task_subtypes=None,
+        license=None,
+        annotations_creators=None,
+        dialect=None,
+        bibtex_citation=None,
+    )
+
+class CR(AbsTaskClassification):
+    metadata = TaskMetadata(
+        name="CR",
+        dataset={
+            "path": "SetFit/cr",
+            "revision": "main"
+        },
+        description="Customer Review Sentiment Classification",
+        type="Classification",
+        category="t2t",
+        eval_splits=["test"],
+        eval_langs=["eng-Latn"],
+        main_score="accuracy",
+        date=None,
+        domains=None,
+        task_subtypes=None,
+        license=None,
+        annotations_creators=None,
+        dialect=None,
+        bibtex_citation=None,
+    )
+
+class SUBJ(AbsTaskClassification):
+    metadata = TaskMetadata(
+        name="SUBJ",
+        dataset={
+            "path": "SetFit/subj",
+            "revision": "main"
+        },
+        description="Subjectivity Classification",
+        type="Classification",
+        category="t2t",
+        eval_splits=["test"],
+        eval_langs=["eng-Latn"],
+        main_score="accuracy",
+        date=None,
+        domains=None,
+        task_subtypes=None,
+        license=None,
+        annotations_creators=None,
+        dialect=None,
+        bibtex_citation=None,
+    )
+
+class SST2(AbsTaskClassification):
+    metadata = TaskMetadata(
+        name="SST2",
+        dataset={
+            "path": "SetFit/sst2",
+            "revision": "main"
+        },
+        description="Stanford Sentiment Treebank",
+        type="Classification",
+        category="t2t",
+        eval_splits=["test"],
+        eval_langs=["eng-Latn"],
+        main_score="accuracy",
+        date=None,
+        domains=None,
+        task_subtypes=None,
+        license=None,
+        annotations_creators=None,
+        dialect=None,
+        bibtex_citation=None,
+    )
+
+
+CUSTOM_TASKS = {
+    "mr": MR,
+    "cr": CR,
+    "subj": SUBJ,
+    "sst2": SST2,
+}
+
 def _instantiate_transfer_tasks(task_names: Sequence[str]):
     tasks = []
     for name in task_names:
         key = name.lower()
+        if key in CUSTOM_TASKS:
+            tasks.append(CUSTOM_TASKS[key]())
+            continue
+            
+        # Fallback to import if not in custom tasks (unlikely for this list)
         target = TASK_IMPORTS.get(key)
         if target is None:
-            # Try to find it in MTEB dynamically if not in our hardcoded list
-            # But for reproduction we stick to the known list
-            raise ValueError(f"Task '{name}' is not a supported transfer task. Known: {list(TASK_IMPORTS.keys())}")
+            raise ValueError(f"Task '{name}' is not a supported transfer task. Known: {list(CUSTOM_TASKS.keys())}")
         
         module_name, class_name = target
         task_cls = _import_task_class(module_name, class_name)
@@ -110,7 +206,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    _ensure_data_cache(args.data_cache)
+    ensure_data_cache(args.data_cache)
 
     encoder = load_encoder_from_ckpt(args.ckpt, model_cache=args.model_cache)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -141,7 +237,7 @@ def main() -> None:
         model_name=model_name,
         overwrite_results=True,
     )
-    results_jsonable = _to_jsonable(results)
+    results_jsonable = to_jsonable(results)
 
     summary_path = results_dir / "summary.json"
     with summary_path.open("w", encoding="utf-8") as fp:

@@ -61,6 +61,16 @@ class SentenceEncoder(nn.Module):
 		for param in self.model.parameters():
 			param.requires_grad = True
 
+		# MLP head for contrastive learning (SimCSE style)
+		# Linear -> Tanh -> Linear (keeping dimension same)
+		# Only used during training if enabled
+		hidden_size = self.model.config.hidden_size
+		self.mlp = nn.Sequential(
+			nn.Linear(hidden_size, hidden_size),
+			nn.Tanh(),
+			nn.Linear(hidden_size, hidden_size)
+		)
+
 	def _pool(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
 		"""Aggregate token representations using the configured pooling strategy."""
 
@@ -92,11 +102,15 @@ class SentenceEncoder(nn.Module):
 		input_ids: torch.Tensor,
 		attention_mask: torch.Tensor,
 		token_type_ids: Optional[torch.Tensor] = None,
+		output_mlp: bool = False,
 	) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
 		"""Compute embeddings from pre-tokenized inputs."""
 		outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
 		hidden_states = outputs.last_hidden_state
 		sentence_repr = self._pool(hidden_states, attention_mask)
+
+		if output_mlp:
+			sentence_repr = self.mlp(sentence_repr)
 
 		if not self.complex_mode:
 			return sentence_repr
@@ -106,9 +120,10 @@ class SentenceEncoder(nn.Module):
 			raise ValueError("Hidden dimension must be even for complex mode")
 
 		dim_half = hidden_dim // 2
-		z_re = sentence_repr[:, :dim_half]
-		z_im = sentence_repr[:, dim_half:]
-		return z_re, z_im
+		# z_re = sentence_repr[:, :dim_half]
+		# z_im = sentence_repr[:, dim_half:]
+		# return z_re, z_im
+		return sentence_repr
 
 	def encode(
 		self,
@@ -149,7 +164,8 @@ class SentenceEncoder(nn.Module):
 			raise ValueError("Hidden dimension must be even for complex mode")
 
 		dim_half = hidden_dim // 2
-		z_re = sentence_repr[:, :dim_half]
-		z_im = sentence_repr[:, dim_half:]
-		return z_re, z_im
+		# z_re = sentence_repr[:, :dim_half]
+		# z_im = sentence_repr[:, dim_half:]
+		# return z_re, z_im
+		return sentence_repr
 
