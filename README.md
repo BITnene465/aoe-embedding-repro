@@ -4,6 +4,8 @@ This repository contains a high-quality reproduction of the ACL 2024 paper **"Ao
 
 We successfully reproduced the paper's results, achieving state-of-the-art performance on STS tasks and surpassing the original paper on In-domain (GIS) benchmarks.
 
+![overview](assets/img/overview.png)
+
 📄 **[Read the Full Reproduction Report](papers/reproduction_report.md)**
 
 📘 **[Step-by-Step Reproduction Guide](experiment/reproduction_guide.md)**
