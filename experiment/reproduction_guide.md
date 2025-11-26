@@ -180,7 +180,7 @@ python -m aoe.analysis \
     --mode cosine_saturation \
     --backbone output/bert_nli_aoe_2ep/ckpt \
     --max_samples 50000 \
-    --plot_dir output/plot/cosine_hist_nli_aoe_2ep
+    --plot_dir output/plot_nli_aoe_2ep
 ```
 
 
