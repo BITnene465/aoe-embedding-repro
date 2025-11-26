@@ -129,7 +129,7 @@ def main() -> None:
     from accelerate import Accelerator
     from accelerate.utils import DistributedDataParallelKwargs
 
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     accelerator = Accelerator(
         gradient_accumulation_steps=config.grad_accum_steps,
         kwargs_handlers=[ddp_kwargs],

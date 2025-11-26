@@ -45,7 +45,7 @@ class SentenceEncoder(nn.Module):
 		# Enforce local loading
 		try:
 			self.tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
-			self.model = AutoModel.from_pretrained(model_path, local_files_only=True)
+			self.model = AutoModel.from_pretrained(model_path, local_files_only=True, add_pooling_layer=False) # 不使用 pooler 层
 		except OSError as e:
 			raise OSError(
 				f"Could not load model from '{model_path}'. "

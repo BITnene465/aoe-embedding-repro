@@ -1,0 +1,14 @@
+Model,STS-B,GIS,Avg
+SimCSE,76.27,60.38,68.33
+SBERT,84.67,69.50,77.09
+AoE (Paper),86.28,70.59,78.44
+AoE(old 5 ep),77.65,24.31,
+AoE(old 10 ep),77.93,26.35,
+AoE(old 20 ep),76.89,31.15,
+AoE(5ep + angle 0.02),74,-,
+AoE(10ep + angle 0.02),78,-,
+AoE(5ep + angle 1.0),77.82,66.72,
+AoE(10ep + angle 1.0),81.39,-,
+AoE(20ep + angle 1.0),83.50,70.94,
+AoE(30ep + angle 1.0),84.52,-,
+AoE(50ep + angle 1.0),84.73,-,

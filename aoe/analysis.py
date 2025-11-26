@@ -76,11 +76,19 @@ def cosine_saturation(
 	"""Compute and visualize cosine saturation on NLI sentence pairs."""
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	encoder = SentenceEncoder(
-		model_name=backbone,
-		complex_mode=False,
-		cache_dir=model_cache,
-	).to(device)
+	
+	ckpt_path = os.path.join(backbone, "encoder.pt")
+	if os.path.exists(ckpt_path):
+		print(f"Loading encoder from checkpoint: {ckpt_path}")
+		encoder = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+		encoder.eval()
+		encoder.to(device)
+	else:
+		encoder = SentenceEncoder(
+			model_name=backbone,
+			complex_mode=False,
+			cache_dir=model_cache,
+		).to(device)
 
 	premises, hypotheses = _sample_nli_pairs(max_samples, cache_dir=data_cache)
 	prem_emb = _encode_texts(encoder, premises, device=device, max_length=max_length)

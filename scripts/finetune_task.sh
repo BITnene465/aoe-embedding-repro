@@ -19,7 +19,7 @@ fi
 # Default hyperparameters (can be overridden by env vars)
 LEARNING_RATE=${LEARNING_RATE:-2e-5}
 EPOCHS=${EPOCHS:-10}
-BATCH_SIZE=${BATCH_SIZE:-128}
+BATCH_SIZE=${BATCH_SIZE:-64}
 OUTPUT_ROOT=${OUTPUT_ROOT:-output}
 DATA_CACHE=${DATA_CACHE:-data}
 MODEL_CACHE=${MODEL_CACHE:-models}
@@ -27,7 +27,7 @@ MAX_LENGTH=${MAX_LENGTH:-128}
 SEED=${SEED:-42}
 GRAD_ACCUM_STEPS=${GRAD_ACCUM_STEPS:-1}
 WARMUP_STEPS=${WARMUP_STEPS:-100}
-STS_W_ANGLE=${STS_W_ANGLE:-0.02}
+STS_W_ANGLE=${STS_W_ANGLE:-1.0}
 RUN_SUFFIX=${RUN_SUFFIX:-$(date +%Y%m%d_%H%M)}
 
 # Construct run name
@@ -60,6 +60,5 @@ $LAUNCHER -m aoe.train \
   --model_cache "${MODEL_CACHE}" \
   --seed "${SEED}" \
   --tensorboard_dir "${OUTPUT_ROOT}/${RUN_NAME}/tensorboard" \
-  --metrics_path "${OUTPUT_ROOT}/${RUN_NAME}/metrics.jsonl" \
   --metrics_path "${OUTPUT_ROOT}/${RUN_NAME}/metrics.jsonl" \
   ${INIT_CHECKPOINT:+--init_checkpoint "${INIT_CHECKPOINT}"}

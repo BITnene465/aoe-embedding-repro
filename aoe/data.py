@@ -346,9 +346,10 @@ def _nli_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
 def _dataset_to_angle_pairs(dataset: Dataset) -> List[Dict[str, object]]:
     pairs: List[Dict[str, object]] = []
     for example in dataset:
-        sent1 = example.get("text1") or example.get("sentence1")
-        sent2 = example.get("text2") or example.get("sentence2")
-        score = example.get("score") or example.get("label")
+        sent1 = _pick_field(example, ("text1", "sentence1"), None)
+        sent2 = _pick_field(example, ("text2", "sentence2"), None)
+        score = _pick_field(example, ("score", "label"), None)
+        
         if sent1 is None or sent2 is None or score is None:
             continue
         try:
