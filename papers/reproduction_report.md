@@ -28,7 +28,7 @@ $$
 
 尽管 SimCSE 取得了巨大成功，但作者通过分析发现，在 NLI（自然语言推理）预训练阶段，模型容易陷入“余弦饱和”状态。即：**绝大多数句子对的余弦相似度都极高（接近 1.0），即使是语义矛盾的句子对也不例外。**(下图展示了 BERT 在 NLI 数据集上的 “余弦饱和”状态)
 
-![cosine_saturation](../assets/img/cosine_saturation.png)
+<img src="../assets/img/cosine_saturation.png" alt="cosine_saturation" style="zoom:50%;" />
 
 数学上，这意味着嵌入向量 $\mathbf{h}$ 均聚集在超球面的一个极小锥体内。当所有 $\cos(\theta) \approx 1$ 时，梯度 $\frac{\partial \mathcal{L}}{\partial \theta} \propto \sin(\theta) \approx 0$，导致模型难以通过微小的角度调整来区分细粒度的语义差异（如“蕴含”与“矛盾”）。
 
@@ -38,7 +38,7 @@ $$
 
 为了解决上述问题，AoE 提出将文本嵌入映射到**复数空间**，利用复数向量间的**角度差异**来衡量语义相似度。
 
-![overview](../assets/img/overview.png)
+<img src="../assets/img/overview.png" alt="overview" style="zoom: 25%;" />
 
 ### 3.1 复数嵌入
 
